@@ -1,0 +1,98 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id            Int      @id @default(autoincrement())
+  email         String   @unique
+  passwordHash  String
+  username      String   @unique
+  level         Int      @default(1)
+  xp            Int      @default(0)
+  coins         Int      @default(0)
+  currentStreak Int      @default(0)
+  highestStreak Int      @default(0)
+  createdAt     DateTime @default(now())
+
+  tasks               Task[]
+  focusSessions       FocusSession[]
+  dailyStats          UserStatsDaily[]
+  rewards             UserReward[]
+  leaderboardScores   LeaderboardScore[]
+  friendsAdded        Friendship[] @relation("UserFriends")
+  friendsAddedBy      Friendship[] @relation("FriendUsers")
+}
+
+model Task {
+  id          Int      @id @default(autoincrement())
+  userId      Int
+  title       String
+  isCompleted Boolean  @default(false)
+  parentId    Int?
+  parent      Task?    @relation("SubTasks", fields: [parentId], references: [id])
+  subTasks    Task[]   @relation("SubTasks")
+  createdAt   DateTime @default(now())
+  user        User     @relation(fields: [userId], references: [id])
+  sessions    FocusSession[]
+}
+
+model FocusSession {
+  id              Int      @id @default(autoincrement())
+  userId          Int
+  taskId          Int?
+  startTime       DateTime @default(now())
+  endTime         DateTime?
+  durationMinutes Int      @default(0)
+  distractions    Int      @default(0)
+  status          String   @default("ONGOING")
+  user            User     @relation(fields: [userId], references: [id])
+  task            Task?    @relation(fields: [taskId], references: [id])
+}
+
+model UserStatsDaily {
+  id             Int      @id @default(autoincrement())
+  userId         Int
+  date           DateTime @db.Date
+  focusMinutes   Int      @default(0)
+  sessionsCount  Int      @default(0)
+  tasksCompleted Int      @default(0)
+  distractions   Int      @default(0)
+  user           User     @relation(fields: [userId], references: [id])
+  @@unique([userId, date])
+}
+
+model UserReward {
+  id           Int      @id @default(autoincrement())
+  userId       Int
+  source       String
+  xpAwarded    Int      @default(0)
+  coinsAwarded Int      @default(0)
+  createdAt    DateTime @default(now())
+  user         User     @relation(fields: [userId], references: [id])
+}
+
+model Friendship {
+  id        Int      @id @default(autoincrement())
+  userId    Int
+  friendId  Int
+  status    String   @default("PENDING")
+  createdAt DateTime @default(now())
+  user      User     @relation("UserFriends", fields: [userId], references: [id])
+  friend    User     @relation("FriendUsers", fields: [friendId], references: [id])
+  @@unique([userId, friendId])
+}
+
+model LeaderboardScore {
+  id             Int      @id @default(autoincrement())
+  userId         Int
+  weekStartDate  DateTime @db.Date
+  xpEarned       Int      @default(0)
+  rank           Int?
+  user           User     @relation(fields: [userId], references: [id])
+  @@unique([userId, weekStartDate])
+}
