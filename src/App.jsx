@@ -5,7 +5,8 @@ import {
   X, Edit3, Trash2, Zap, Play, Pause, RotateCcw,
   Paperclip, ArrowLeft, Settings as SettingsIcon,
   Moon, Sun, Bell, Database, Key, ShieldAlert,
-  ChevronDown, ChevronUp, ChevronLeft, Users, MapPin, Trophy, Ticket
+  ChevronDown, ChevronUp, ChevronLeft, Users, MapPin, Trophy, Ticket,
+  Menu, PanelLeftClose
 } from 'lucide-react';
 
 // ==========================================
@@ -77,10 +78,68 @@ const INITIAL_EVENTS = [
   { id: 5, time: '11:55 AM', type: 'focus', desc: 'Back to Focus' },
 ];
 
-const INITIAL_NOTES = [
-  { id: 'n1', text: 'Ask professor about the extension for the essay.', timestamp: '10:00 AM' },
-  { id: 'n2', text: 'Buy milk and coffee beans later.', timestamp: '11:30 AM' }
-];
+// Monitor Events: 从 localStorage 读取
+const loadEvents = () => {
+  try {
+    const saved = localStorage.getItem('fc_events');
+    if (saved) return JSON.parse(saved);
+  } catch (e) { /* ignore */ }
+  return INITIAL_EVENTS;
+};
+const loadTasks = () => {
+  try {
+    const saved = localStorage.getItem('fc_tasks');
+    if (saved) return JSON.parse(saved);
+  } catch (e) { /* ignore */ }
+  return INITIAL_TASKS;
+};
+const loadNotes = () => {
+  try {
+    const saved = localStorage.getItem('fc_notes');
+    if (saved) return JSON.parse(saved);
+  } catch (e) { /* ignore */ }
+  return [
+    { id: 'n1', text: 'Ask professor about the extension for the essay.', time: '10:00 AM' },
+    { id: 'n2', text: 'Buy milk and coffee beans later.', time: '11:30 AM' }
+  ];
+};
+
+const loadSettings = () => {
+  try {
+    const saved = localStorage.getItem('fc_settings');
+    if (saved) {
+      return {
+        theme: 'light',
+        monitorEnabled: true,
+        distractThreshold: 5,
+        storagePath: '/Users/local/flow-crusade/data',
+        apiKey: 'sk-mock-123456',
+        notifications: true,
+        taskStorage: 'mysql',
+        noteStorage: 'mongodb',
+        monitorStorage: 'mongodb',
+        deploymentProvider: 'gcp',
+        backendUrl: 'https://api.flowcrusade.app',
+        autoBreakdown: true,
+        ...JSON.parse(saved)
+      };
+    }
+  } catch (e) { /* ignore */ }
+  return {
+    theme: 'light',
+    monitorEnabled: true,
+    distractThreshold: 5,
+    storagePath: '/Users/local/flow-crusade/data',
+    apiKey: 'sk-mock-123456',
+    notifications: true,
+    taskStorage: 'mysql',
+    noteStorage: 'mongodb',
+    monitorStorage: 'mongodb',
+    deploymentProvider: 'gcp',
+    backendUrl: 'https://api.flowcrusade.app',
+    autoBreakdown: true,
+  };
+};
 
 // ==========================================
 // 2. THEME DEFINITIONS
@@ -152,6 +211,68 @@ function clamp01(x) { return Math.max(0, Math.min(1, x)); }
 function formatMins(m) { const v = Math.max(0, Math.round(Number(m) || 0)); return `${v}m`; }
 
 
+function updateTaskTree(nodes, targetId, updater) {
+  return nodes.map(node => {
+    if (node.id === targetId) return updater(node);
+    if (!node.children || node.children.length === 0) return node;
+    return { ...node, children: updateTaskTree(node.children, targetId, updater) };
+  });
+}
+
+function findTaskNode(nodes, targetId) {
+  for (const node of nodes) {
+    if (node.id === targetId) return node;
+    if (node.children?.length) {
+      const found = findTaskNode(node.children, targetId);
+      if (found) return found;
+    }
+  }
+  return null;
+}
+
+function generateBreakdownChildren(task) {
+  const baseId = `${task.id}-${Date.now()}`;
+  const title = (task.title || '').toLowerCase();
+  const templates = [
+    ['Clarify the goal', 'Write a 1-2 sentence outcome so the next step is obvious.'],
+    ['Gather what you need', 'Collect links, files, notes, or materials before you start.'],
+    ['Start the first small step', 'Spend 5-10 minutes on the easiest executable action.'],
+  ];
+
+  if (/essay|paper|write|report|draft/.test(title)) {
+    templates.splice(0, templates.length,
+      ['Define the argument', 'Write the main claim and the 2-3 points you want to support.'],
+      ['Collect evidence', 'Pull sources, examples, or quotes into one place.'],
+      ['Draft the first section', 'Write the easiest paragraph first to reduce startup friction.'],
+      ['Revise and finalize', 'Check structure, citations, and polish the final draft.'],
+    );
+  } else if (/study|exam|quiz|midterm|chapter|read/.test(title)) {
+    templates.splice(0, templates.length,
+      ['List the topics', 'Write down the concepts or pages you need to cover.'],
+      ['Review one chunk', 'Study a single section and summarize it in your own words.'],
+      ['Do active recall', 'Test yourself with a few questions or practice problems.'],
+      ['Wrap up weak spots', 'Mark confusing parts and review them once more.'],
+    );
+  } else if (/meeting|sync|slide|presentation/.test(title)) {
+    templates.splice(0, templates.length,
+      ['Outline the agenda', 'Decide the main points and the order you want to present them.'],
+      ['Prepare materials', 'Gather slides, notes, links, or supporting assets.'],
+      ['Draft talking points', 'Write concise bullets for what you need to say.'],
+      ['Final review', 'Check timing, flow, and anything that still needs cleanup.'],
+    );
+  }
+
+  return templates.map(([childTitle, desc], idx) => ({
+    id: `${baseId}-${idx + 1}`,
+    title: childTitle,
+    progress: 0,
+    status: 'pending',
+    desc,
+    children: [],
+  }));
+}
+
+
 // ==========================================
 // 3. MAIN APP COMPONENT
 // ==========================================
@@ -162,22 +283,38 @@ export default function FlowCrusadeApp() {
   const [theme, setTheme] = useState('light');
   const t = THEMES[theme];
   
-  const [tasks, setTasks] = useState(INITIAL_TASKS);
+  const [tasks, setTasks] = useState(loadTasks);
   const [activeTaskId, setActiveTaskId] = useState(null); // Which root task is active
   const [path, setPath] = useState([]); // Subtask drill-down path: [taskId, subtaskId, ...]
   
   const [stats, setStats] = useState(INITIAL_STATS);
-  const [events, setEvents] = useState(INITIAL_EVENTS);
-  const [notes, setNotes] = useState(INITIAL_NOTES);
+  const [events, setEvents] = useState(loadEvents);
+
+  // Monitor Events: 每次变化自动保存
+  useEffect(() => {
+    localStorage.setItem('fc_events', JSON.stringify(events));
+  }, [events]);
+  const [notes, setNotes] = useState(loadNotes);
   const [isNotesOpen, setIsNotesOpen] = useState(false); // mobile / tablet drawer
-  const [settings, setSettings] = useState({
-    theme: 'light',
-    monitorEnabled: true,
-    distractThreshold: 5,
-    storagePath: '/Users/local/flow-crusade/data',
-    apiKey: 'sk-mock-123456',
-    notifications: true
-  });
+  const [isNotesSidebarOpen, setIsNotesSidebarOpen] = useState(true); // desktop sidebar
+  const [notesSidebarWidth, setNotesSidebarWidth] = useState(320); // default 320px, resizable
+  const [navWidth, setNavWidth] = useState(180); // left nav width, resizable
+  const [navCollapsed, setNavCollapsed] = useState(false); // 左侧导航折叠
+
+  // Tasks: 每次变化自动保存到 localStorage
+  useEffect(() => {
+    localStorage.setItem('fc_tasks', JSON.stringify(tasks));
+  }, [tasks]);
+
+  // Quick Notes: 每次 notes 变化自动保存到 localStorage
+  useEffect(() => {
+    localStorage.setItem('fc_notes', JSON.stringify(notes));
+  }, [notes]);
+  const [settings, setSettings] = useState(loadSettings);
+
+  useEffect(() => {
+    localStorage.setItem('fc_settings', JSON.stringify(settings));
+  }, [settings]);
 
   // UI States
   const [activePanel, setActivePanel] = useState(null); // 'calendar'|'stats'|'monitor'|'settings'
@@ -211,13 +348,14 @@ export default function FlowCrusadeApp() {
   const openRewards = () => setIsRewardsOpen(true);
   const closeRewards = () => setIsRewardsOpen(false);
 
-  const createNewTask = (title, date = '2026-02-28') => {
+  const createNewTask = (title, date) => {
+    const d = date || new Date().toISOString().split('T')[0];
     const newTask = {
       id: `task_${Date.now()}`,
       title,
       progress: 0,
       status: 'pending',
-      date,
+      date: d,
       desc: 'No description provided.',
       children: []
     };
@@ -226,8 +364,28 @@ export default function FlowCrusadeApp() {
     return newTask;
   };
 
+  const deleteTask = (taskId) => {
+    setTasks(tasks.filter(tk => tk.id !== taskId));
+    if (activeTaskId === taskId) setActiveTaskId(null);
+    showToast('Task deleted');
+  };
+
+  const toggleTask = (taskId) => {
+    setTasks(tasks.map(tk => 
+      tk.id === taskId ? { ...tk, status: tk.status === 'done' ? 'pending' : 'done', progress: tk.status === 'done' ? 0 : 100 } : tk
+    ));
+  };
+
   const handleBreakdown = (taskIdToBreakdown) => {
-    setPath([...path, taskIdToBreakdown]);
+    const target = findTaskNode(tasks, taskIdToBreakdown);
+
+    if (settings.autoBreakdown && target && (!target.children || target.children.length === 0)) {
+      const generated = generateBreakdownChildren(target);
+      setTasks(prev => updateTaskTree(prev, taskIdToBreakdown, node => ({ ...node, children: generated })));
+      showToast('AI mock: generated a starter breakdown');
+    }
+
+    setPath(prev => [...prev, taskIdToBreakdown]);
     setIsFocusedMode(true);
   };
 
@@ -236,63 +394,109 @@ export default function FlowCrusadeApp() {
     setIsFocusedMode(false);
   };
 
-  const handleSimulateDistraction = () => {
+  const handleSimulateDistraction = (source = 'Reddit') => {
     const time = new Date().toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
-    setEvents([{ id: Date.now(), time, type: 'distract', desc: 'Distracted → Reddit (Simulated)' }, ...events]);
+    setEvents([{ id: Date.now(), time, type: 'distract', desc: `Distracted → ${source}`, source }, ...events]);
     setStats(prev => ({
       ...prev,
       distractCount: prev.distractCount + 1,
       distractTime: prev.distractTime + 2
     }));
-    showToast('Distraction recorded', 'warning');
+    showToast(`Distraction: ${source}`, 'warning');
+  };
+
+  const addFocusEvent = () => {
+    const time = new Date().toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
+    setEvents([{ id: Date.now(), time, type: 'focus', desc: 'Back to Focus' }, ...events]);
+    showToast('Back to focus!');
+  };
+
+  const deleteEvent = (eventId) => {
+    setEvents(events.filter(ev => ev.id !== eventId));
+  };
+
+  const clearAllEvents = () => {
+    setEvents([]);
+    showToast('Timeline cleared');
   };
 
   return (
     <div className={`flex h-screen w-full font-sans overflow-hidden selection:bg-indigo-500/30 transition-colors duration-300 ${t.bgApp} ${t.textMain}`}>
       
       {/* ================= LEFT SIDEBAR ================= */}
-      <nav className={`flex flex-col items-center py-6 ${t.bgPanel} ${t.border} border-r transition-all duration-300 z-20 shrink-0 ${isFocusedMode ? 'w-16' : 'w-20 lg:w-64'}`}>
+      <nav className={`flex flex-col items-center py-6 ${t.bgPanel} ${t.border} border-r transition-colors duration-300 z-40 shrink-0 relative`}
+        style={{ width: isFocusedMode ? 64 : navCollapsed ? 56 : navWidth }}>
         
-        {/* Logo */}
-        <div className={`flex items-center gap-3 mb-10 ${t.textMain}`}>
-          <div className="relative">
-            <Zap className="w-7 h-7 text-indigo-500 fill-indigo-500/20" />
-            {nearReward && <div className="absolute inset-0 bg-indigo-500 rounded-full blur-lg animate-ping opacity-50" />}
+        {/* 右侧拖拽条 */}
+        {!isFocusedMode && !navCollapsed && (
+          <div
+            className="absolute right-0 top-0 bottom-0 w-1.5 cursor-col-resize z-50 group"
+            onMouseDown={(e) => {
+              e.preventDefault();
+              const startX = e.clientX;
+              const startW = navWidth;
+              const onMove = (ev) => {
+                const diff = ev.clientX - startX;
+                setNavWidth(Math.max(60, Math.min(280, startW + diff)));
+              };
+              const onUp = () => { document.removeEventListener('mousemove', onMove); document.removeEventListener('mouseup', onUp); };
+              document.addEventListener('mousemove', onMove);
+              document.addEventListener('mouseup', onUp);
+            }}
+          >
+            <div className={`w-0.5 h-full mx-auto transition-colors group-hover:bg-indigo-500/50 ${t.border}`}></div>
           </div>
-          {!isFocusedMode && <span className="text-xl font-bold tracking-tight hidden lg:block">Flow Crusade</span>}
+        )}
+        {/* Logo + 折叠按钮 */}
+        <div className={`flex items-center mb-8 px-3 w-full ${navCollapsed || isFocusedMode ? 'justify-center' : 'justify-between'}`}>
+          <div className={`flex items-center gap-2 ${t.textMain}`}>
+            <img src="/logo.png" alt="FlowCrusade" className="w-8 h-8 shrink-0 object-contain" />
+            {!navCollapsed && !isFocusedMode && navWidth > 130 && <span className="text-base font-bold tracking-tight whitespace-nowrap">FlowCrusade</span>}
+          </div>
+          {!isFocusedMode && !navCollapsed && navWidth > 130 && (
+            <button onClick={() => setNavCollapsed(true)} className={`p-1.5 rounded-lg transition-colors text-indigo-400 hover:bg-indigo-500/10`} title="Collapse menu">
+              <PanelLeftClose className="w-4 h-4" />
+            </button>
+          )}
         </div>
+        {/* 折叠时：hamburger 按钮展开 */}
+        {navCollapsed && !isFocusedMode && (
+          <button onClick={() => setNavCollapsed(false)} className="mb-4 p-2 rounded-lg transition-colors text-indigo-400 hover:bg-indigo-500/10" title="Expand menu">
+            <Menu className="w-5 h-5" />
+          </button>
+        )}
 
         {/* Nav Items */}
         <div className="flex flex-col gap-3 w-full px-3">
-          <NavItem t={t} icon={<CalendarIcon/>} label="Calendar" active={activePanel === 'calendar'} isFocusedMode={isFocusedMode} onClick={() => setActivePanel(activePanel === 'calendar' ? null : 'calendar')} />
-          <NavItem t={t} icon={<BarChart2/>} label="Statistics" active={activePanel === 'stats'} isFocusedMode={isFocusedMode} onClick={() => setActivePanel(activePanel === 'stats' ? null : 'stats')} />
-          <NavItem t={t} icon={<Activity/>} label="Monitor" active={activePanel === 'monitor'} isFocusedMode={isFocusedMode} onClick={() => setActivePanel(activePanel === 'monitor' ? null : 'monitor')} />
-          <NavItem t={t} icon={<SettingsIcon/>} label="Settings" active={activePanel === 'settings'} isFocusedMode={isFocusedMode} onClick={() => setActivePanel(activePanel === 'settings' ? null : 'settings')} />
+          <NavItem t={t} icon={<CalendarIcon/>} label="Calendar" active={activePanel === 'calendar'} isFocusedMode={isFocusedMode} showLabel={!navCollapsed && navWidth > 120} onClick={() => setActivePanel(activePanel === 'calendar' ? null : 'calendar')} />
+          <NavItem t={t} icon={<BarChart2/>} label="Statistics" active={activePanel === 'stats'} isFocusedMode={isFocusedMode} showLabel={!navCollapsed && navWidth > 120} onClick={() => setActivePanel(activePanel === 'stats' ? null : 'stats')} />
+          <NavItem t={t} icon={<Activity/>} label="Monitor" active={activePanel === 'monitor'} isFocusedMode={isFocusedMode} showLabel={!navCollapsed && navWidth > 120} onClick={() => setActivePanel(activePanel === 'monitor' ? null : 'monitor')} />
+          <NavItem t={t} icon={<SettingsIcon/>} label="Settings" active={activePanel === 'settings'} isFocusedMode={isFocusedMode} showLabel={!navCollapsed && navWidth > 120} onClick={() => setActivePanel(activePanel === 'settings' ? null : 'settings')} />
         </div>
 
         <div className="flex-grow" />
 
         {/* Reward Progress Orb */}
-        <div className="mb-4 flex flex-col items-center w-full px-3">
+        <div className="mb-4 flex flex-col items-center w-full px-2 overflow-hidden">
           <button
             type="button"
             onClick={openRewards}
-            className={`group relative w-12 h-12 rounded-2xl flex items-center justify-center border shadow-sm transition-transform active:scale-95 mx-auto ${theme === 'dark' ? 'bg-[#1c202a] border-white/5' : 'bg-white border-slate-200'} ${nearReward ? 'ring-2 ring-indigo-500/25' : ''}`}
+            className={`group relative w-10 h-10 rounded-xl flex items-center justify-center border shadow-sm transition-transform active:scale-95 mx-auto ${theme === 'dark' ? 'bg-[#1c202a] border-white/5' : 'bg-white border-slate-200'} ${nearReward ? 'ring-2 ring-indigo-500/25' : ''}`}
             title="Rewards progress"
           >
-            <ProgressRing percent={rewardProgress} theme={theme} size={48} stroke={5} />
+            <ProgressRing percent={rewardProgress} theme={theme} size={40} stroke={4} />
             <div className="absolute inset-0 flex items-center justify-center">
-              <Zap className={`w-4 h-4 ${theme === 'dark' ? 'text-indigo-300' : 'text-indigo-700'} ${nearReward ? 'drop-shadow-[0_0_10px_rgba(99,102,241,0.35)]' : ''}`} />
+              <Zap className={`w-3.5 h-3.5 ${theme === 'dark' ? 'text-indigo-300' : 'text-indigo-700'} ${nearReward ? 'drop-shadow-[0_0_10px_rgba(99,102,241,0.35)]' : ''}`} />
             </div>
           </button>
 
-          {!isFocusedMode && (
-            <div className="text-center mt-2 text-xs font-bold text-indigo-500 hidden lg:block">
+          {!isFocusedMode && !navCollapsed && navWidth > 130 && (
+            <div className="text-center mt-2 text-xs font-bold text-indigo-500">
               {formatMins(stats.focusScore)} <span className={t.textMuted}>/ {formatMins(rewardBounds.next)}</span>
             </div>
           )}
-          {!isFocusedMode && (
-            <div className={`text-center mt-1 text-[10px] font-semibold ${t.textMuted} hidden lg:block`}>
+          {!isFocusedMode && !navCollapsed && navWidth > 130 && (
+            <div className={`text-center mt-1 text-[10px] font-semibold ${t.textMuted}`}>
               {userLevel.name}
             </div>
           )}
@@ -304,8 +508,13 @@ export default function FlowCrusadeApp() {
         t={t} theme={theme} activePanel={activePanel} close={() => setActivePanel(null)} 
         stats={stats} events={events} tasks={tasks} settings={settings} setSettings={setSettings}
         onSimulateDistraction={handleSimulateDistraction}
+        onAddFocusEvent={addFocusEvent}
+        onDeleteEvent={deleteEvent}
+        onClearEvents={clearAllEvents}
         onSelectTask={(id) => { setActiveTaskId(id); setPath([]); setIsFocusedMode(false); }}
         onCreateTask={(title, date) => createNewTask(title, date)}
+        onDeleteTask={deleteTask}
+        onToggleTask={toggleTask}
         activeTaskId={activeTaskId}
         showToast={showToast}
       />
@@ -400,18 +609,51 @@ export default function FlowCrusadeApp() {
       </main>
 
       {/* ================= RIGHT SIDEBAR: QUICK NOTES ================= */}
-      <aside className={`flex flex-col border-l transition-all duration-300 z-10 shrink-0 ${t.bgPanel} ${t.border} ${isFocusedMode ? `w-16 cursor-pointer ${theme === 'dark' ? 'hover:bg-white/5' : 'hover:bg-slate-100'}` : 'w-0 lg:w-80 hidden lg:flex'}`}
-             onClick={() => isFocusedMode && setIsFocusedMode(false)}>
-        
-        {isFocusedMode ? (
+      {isNotesSidebarOpen && !isFocusedMode && (
+        <aside className={`flex-col border-l z-10 shrink-0 hidden lg:flex relative ${t.bgPanel} ${t.border}`}
+          style={{ width: notesSidebarWidth }}
+        >
+          {/* 左边拖拽条 */}
+          <div
+            className="absolute left-0 top-0 bottom-0 w-2 cursor-col-resize z-20 group -ml-1"
+            onMouseDown={(e) => {
+              e.preventDefault();
+              const startX = e.clientX;
+              const startW = notesSidebarWidth;
+              const onMove = (ev) => {
+                const diff = startX - ev.clientX;
+                const newW = Math.max(200, Math.min(500, startW + diff));
+                setNotesSidebarWidth(newW);
+              };
+              const onUp = () => { document.removeEventListener('mousemove', onMove); document.removeEventListener('mouseup', onUp); };
+              document.addEventListener('mousemove', onMove);
+              document.addEventListener('mouseup', onUp);
+            }}
+          >
+            <div className={`w-0.5 h-full mx-auto transition-colors group-hover:bg-indigo-500 ${t.border}`}></div>
+          </div>
+          <QuickNotesPanel t={t} theme={theme} notes={notes} setNotes={setNotes} onClose={() => setIsNotesSidebarOpen(false)} />
+        </aside>
+      )}
+      {isFocusedMode && (
+        <aside className={`flex flex-col border-l transition-all duration-300 z-10 shrink-0 w-16 cursor-pointer ${t.bgPanel} ${t.border} ${theme === 'dark' ? 'hover:bg-white/5' : 'hover:bg-slate-100'}`}
+               onClick={() => setIsFocusedMode(false)}>
           <div className={`flex flex-col items-center py-6 h-full ${t.textMuted}`}>
             <Edit3 className="w-5 h-5 mb-4" />
             <div className="writing-vertical-rl text-[10px] tracking-[0.2em] uppercase opacity-50">Quick Notes</div>
           </div>
-        ) : (
-          <QuickNotesPanel t={t} theme={theme} notes={notes} setNotes={setNotes} />
-        )}
-      </aside>
+        </aside>
+      )}
+      {/* Desktop: Quick Notes 关闭后的小按钮，点击重新打开 */}
+      {!isNotesSidebarOpen && !isFocusedMode && (
+        <button
+          onClick={() => setIsNotesSidebarOpen(true)}
+          className={`fixed top-4 right-4 z-30 hidden lg:flex p-2.5 rounded-xl shadow-lg border transition-colors ${t.bgPanel} ${t.border} ${t.textMuted} hover:text-indigo-400 hover:border-indigo-500/50`}
+          title="Open Quick Notes"
+        >
+          <Edit3 className="w-4 h-4" />
+        </button>
+      )}
 
       {/* Mobile/Tablet: Quick Notes FAB + Drawer (so notes work below lg) */}
       <button
@@ -473,7 +715,7 @@ function ViewA({ t, theme, onSubmit, showToast }) {
     <div className="flex-1 flex flex-col items-center justify-center max-w-3xl mx-auto w-full animate-fade-in">
       <div className="text-center mb-12">
         <div className={`w-16 h-16 rounded-2xl mx-auto mb-6 flex items-center justify-center border ${theme === 'dark' ? 'bg-[#1c202a] border-white/10 shadow-[0_0_30px_rgba(99,102,241,0.1)]' : 'bg-white border-slate-200 shadow-xl shadow-indigo-100'}`}>
-           <Zap className="w-8 h-8 text-indigo-500 fill-indigo-500/20" />
+           <img src="/logo.png" alt="FlowCrusade" className="w-10 h-10 object-contain" />
         </div>
         <h1 className={`text-3xl md:text-4xl font-bold tracking-tight mb-4 ${t.textMain}`}>What are we crushing today?</h1>
         <p className={`text-lg ${t.textMuted}`}>Enter a task, drop an assignment, and let's break it down.</p>
@@ -746,17 +988,18 @@ function FocusDetailView({ t, theme, task, onComplete, onBack, onFurtherBreakdow
 // UI & UTILITY COMPONENTS
 // ==========================================
 
-function NavItem({ t, icon, label, active, isFocusedMode, onClick }) {
+function NavItem({ t, icon, label, active, isFocusedMode, onClick, showLabel = true }) {
+  const hideLabel = isFocusedMode || !showLabel;
   return (
     <button 
       onClick={onClick}
-      className={`relative flex items-center gap-4 p-3.5 rounded-xl transition-all group font-semibold text-sm ${active ? t.accentActive : `${t.textMuted} ${t.accentHover}`} ${isFocusedMode ? 'justify-center' : 'justify-start'}`}
-      title={isFocusedMode ? label : undefined}
+      className={`relative flex items-center gap-3 p-3 rounded-xl transition-all group font-semibold text-sm ${active ? t.accentActive : `${t.textMuted} ${t.accentHover}`} ${hideLabel ? 'justify-center' : 'justify-start'}`}
+      title={hideLabel ? label : undefined}
     >
-      <div className={`w-5 h-5 shrink-0 ${active ? '' : ''}`}>
+      <div className="w-6 h-6 shrink-0">
         {icon}
       </div>
-      {!isFocusedMode && <span className="hidden lg:block whitespace-nowrap">{label}</span>}
+      {!hideLabel && <span className="whitespace-nowrap overflow-hidden">{label}</span>}
       {active && <div className="absolute left-0 top-1/2 -translate-y-1/2 w-1 h-6 bg-indigo-500 rounded-r-full shadow-[0_0_10px_rgba(99,102,241,0.5)]" />}
     </button>
   );
@@ -973,18 +1216,39 @@ function RewardProgressModal({ open, onClose, t, theme, stats }) {
   );
 }
 
-function LeftPanels({ t, theme, activePanel, close, stats, events, tasks, settings, setSettings, onSimulateDistraction, onSelectTask, onCreateTask, activeTaskId, showToast }) {
+function LeftPanels({ t, theme, activePanel, close, stats, events, tasks, settings, setSettings, onSimulateDistraction, onAddFocusEvent, onDeleteEvent, onClearEvents, onSelectTask, onCreateTask, onDeleteTask, onToggleTask, activeTaskId, showToast }) {
+  const [panelWidth, setPanelWidth] = useState(360);
+
   if (!activePanel) return null;
 
   return (
-    <div className="fixed inset-0 z-30">
-      {/* Mobile backdrop */}
+    <>
+      {/* Mobile backdrop only */}
       <div
-        className="absolute inset-0 bg-black/30 backdrop-blur-sm md:hidden"
+        className="fixed inset-0 bg-black/30 backdrop-blur-sm md:hidden z-30"
         onClick={close}
       />
 
-      <div className={`absolute left-0 md:left-[80px] lg:left-[256px] top-0 bottom-0 w-full sm:w-96 border-r shadow-2xl animate-slide-right flex flex-col ${t.bgPanel} ${t.border}`}>
+      <div className={`border-r shadow-lg flex flex-col shrink-0 z-30 relative ${t.bgPanel} ${t.border}`} style={{ width: panelWidth }}>
+        {/* 右侧拖拽条 */}
+        <div
+          className="absolute right-0 top-0 bottom-0 w-2 cursor-col-resize z-40 group -mr-1"
+          onMouseDown={(e) => {
+            e.preventDefault();
+            const startX = e.clientX;
+            const startW = panelWidth;
+            const onMove = (ev) => {
+              const diff = ev.clientX - startX;
+              setPanelWidth(Math.max(260, Math.min(600, startW + diff)));
+            };
+            const onUp = () => { document.removeEventListener('mousemove', onMove); document.removeEventListener('mouseup', onUp); };
+            document.addEventListener('mousemove', onMove);
+            document.addEventListener('mouseup', onUp);
+          }}
+        >
+          <div className={`w-0.5 h-full mx-auto transition-colors group-hover:bg-indigo-500 ${t.border}`}></div>
+        </div>
+
         <div className={`p-6 flex items-center justify-between border-b ${t.border}`}>
           <h3 className={`font-bold text-lg capitalize ${t.textMain}`}>{activePanel}</h3>
           <button onClick={close} className={`p-2 rounded-xl transition-colors ${t.textMuted} ${theme === 'dark' ? 'hover:bg-white/5' : 'hover:bg-slate-100'}`}>
@@ -993,37 +1257,67 @@ function LeftPanels({ t, theme, activePanel, close, stats, events, tasks, settin
         </div>
 
         <div className="p-6 flex-1 overflow-y-auto custom-scrollbar">
-          {activePanel === 'calendar' && <CalendarPanel t={t} tasks={tasks} onSelectTask={onSelectTask} onCreateTask={onCreateTask} activeTaskId={activeTaskId} />}
+          {activePanel === 'calendar' && <CalendarPanel t={t} tasks={tasks} onSelectTask={onSelectTask} onCreateTask={onCreateTask} activeTaskId={activeTaskId} onDeleteTask={onDeleteTask} onToggleTask={onToggleTask} />}
           {activePanel === 'stats' && <StatsPanel t={t} theme={theme} stats={stats} />}
-          {activePanel === 'monitor' && <MonitorPanel t={t} theme={theme} events={events} onSimulate={onSimulateDistraction} enabled={settings.monitorEnabled} onToggle={(v) => setSettings({...settings, monitorEnabled: v})} />}
+          {activePanel === 'monitor' && <MonitorPanel t={t} theme={theme} events={events} onSimulate={onSimulateDistraction} onAddFocus={onAddFocusEvent} onDeleteEvent={onDeleteEvent} onClearEvents={onClearEvents} enabled={settings.monitorEnabled} onToggle={(v) => setSettings({...settings, monitorEnabled: v})} />}
           {activePanel === 'settings' && <SettingsPanel t={t} settings={settings} setSettings={setSettings} showToast={showToast} />}
         </div>
       </div>
-    </div>
+    </>
   );
 }
 
 // Quick Notes content (used both in the right sidebar and the mobile drawer)
-function QuickNotesPanel({ t, theme, notes, setNotes, showHeader = true }) {
+function QuickNotesPanel({ t, theme, notes, setNotes, showHeader = true, onClose }) {
   const [val, setVal] = useState('');
+  const [noteType, setNoteType] = useState('quick');
 
   const addNote = () => {
     const text = val.trim();
     if (!text) return;
     const time = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-    const note = { id: `${Date.now()}-${Math.random().toString(16).slice(2)}`, text, time };
+    const note = { id: `${Date.now()}-${Math.random().toString(16).slice(2)}`, text, time, type: noteType };
     setNotes([note, ...notes]);
     setVal('');
   };
 
   const removeNote = (id) => setNotes(notes.filter(n => n.id !== id));
+  const exportNotes = () => {
+    const blob = new Blob([JSON.stringify(notes, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = 'flow-crusade-notes.json';
+    link.click();
+    URL.revokeObjectURL(url);
+  };
+  const importNotes = (file) => {
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      try {
+        const parsed = JSON.parse(String(e.target?.result || '[]'));
+        if (Array.isArray(parsed)) setNotes(parsed);
+      } catch {
+        alert('Invalid JSON file.');
+      }
+    };
+    reader.readAsText(file);
+  };
 
   return (
     <div className="flex flex-col h-full">
       {showHeader && (
         <div className={`p-6 border-b ${t.border}`}>
-          <h3 className={`font-bold text-lg ${t.textMain}`}>Quick Notes</h3>
-          <p className={`text-xs mt-1 ${t.textMuted}`}>Scratchpad for passing thoughts (not persisted in this demo).</p>
+          <div className="flex items-center justify-between">
+            <h3 className={`font-bold text-lg ${t.textMain}`}>Quick Notes</h3>
+            {onClose && (
+              <button onClick={onClose} className={`p-2 rounded-xl transition-colors ${t.textMuted} ${theme === 'dark' ? 'hover:bg-white/5' : 'hover:bg-slate-100'}`} title="Close Quick Notes">
+                <X className="w-4 h-4" />
+              </button>
+            )}
+          </div>
+          <p className={`text-xs mt-1 ${t.textMuted}`}>Scratchpad for passing thoughts. Auto-saved locally.</p>
         </div>
       )}
 
@@ -1080,67 +1374,194 @@ function QuickNotesPanel({ t, theme, notes, setNotes, showHeader = true }) {
 }
 
 // 4.1 Calendar Panel
-function CalendarPanel({ t, tasks, onSelectTask, onCreateTask, activeTaskId }) {
+function CalendarPanel({ t, tasks, onSelectTask, onCreateTask, activeTaskId, onDeleteTask, onToggleTask }) {
   const [showAdd, setShowAdd] = useState(false);
   const [newTitle, setNewTitle] = useState('');
+  const [newDate, setNewDate] = useState('');
+  const [selectedDay, setSelectedDay] = useState(null); // 点击日历选中的日期
   
-  // Dummy Calendar Grid Generation (Feb 2026)
-  const days = Array.from({length: 28}, (_, i) => i + 1);
-  const getTaskForDay = (day) => tasks.filter(tk => tk.date === `2026-02-${day.toString().padStart(2, '0')}`);
+  // 动态月份：可以前后翻页
+  const today = new Date();
+  const [viewYear, setViewYear] = useState(today.getFullYear());
+  const [viewMonth, setViewMonth] = useState(today.getMonth()); // 0-indexed
+
+  const monthNames = ['January','February','March','April','May','June','July','August','September','October','November','December'];
+
+  const prevMonth = () => {
+    setSelectedDay(null);
+    if (viewMonth === 0) { setViewMonth(11); setViewYear(viewYear - 1); }
+    else setViewMonth(viewMonth - 1);
+  };
+  const nextMonth = () => {
+    setSelectedDay(null);
+    if (viewMonth === 11) { setViewMonth(0); setViewYear(viewYear + 1); }
+    else setViewMonth(viewMonth + 1);
+  };
+
+  // 计算这个月第一天是星期几 和 总天数
+  const firstDayOfWeek = new Date(viewYear, viewMonth, 1).getDay();
+  const daysInMonth = new Date(viewYear, viewMonth + 1, 0).getDate();
+  const days = Array.from({length: daysInMonth}, (_, i) => i + 1);
+
+  // 构建日期字符串
+  const makeDateStr = (day) => `${viewYear}-${String(viewMonth + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+
+  // 某天有哪些 task
+  const getTaskForDay = (day) => tasks.filter(tk => tk.date === makeDateStr(day));
+
+  // 判断是不是今天
+  const todayStr = makeDateStr(today.getDate());
+  const isToday = (day) => viewYear === today.getFullYear() && viewMonth === today.getMonth() && day === today.getDate();
+
+  // 点击某天：第一次选中，再点同一天弹出 Add Task（due date = 那天）
+  const handleDayClick = (day) => {
+    if (selectedDay === day) {
+      setNewDate(makeDateStr(day));
+      setShowAdd(true);
+    } else {
+      setSelectedDay(day);
+      setShowAdd(false);
+    }
+  };
+
+  // 当前显示的 task 列表（选中了某天就只显示那天的，否则显示整月）
+  const displayTasks = selectedDay
+    ? tasks.filter(tk => tk.date === makeDateStr(selectedDay))
+    : tasks.filter(tk => {
+        if (!tk.date) return false;
+        const [y, m] = tk.date.split('-').map(Number);
+        return y === viewYear && m === viewMonth + 1;
+      });
+  const sortedTasks = [...displayTasks].sort((a, b) => (a.date || '').localeCompare(b.date || ''));
+
+  // 导入 .ics 文件（Google Calendar / Apple Calendar 导出格式）
+  const handleImportICS = (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (ev) => {
+      const text = ev.target?.result;
+      if (typeof text !== 'string') return;
+      // 简单解析 .ics VEVENT
+      const events = text.split('BEGIN:VEVENT');
+      let imported = 0;
+      events.forEach(block => {
+        const summaryMatch = block.match(/SUMMARY[^:]*:(.*)/);
+        const dtMatch = block.match(/DTSTART[^:]*:(\d{4})(\d{2})(\d{2})/);
+        if (summaryMatch && dtMatch) {
+          const title = summaryMatch[1].trim();
+          const date = `${dtMatch[1]}-${dtMatch[2]}-${dtMatch[3]}`;
+          onCreateTask(title, date);
+          imported++;
+        }
+      });
+      if (imported > 0) {
+        alert(`Imported ${imported} event${imported > 1 ? 's' : ''} successfully!`);
+      } else {
+        alert('No events found in this file. Make sure it\'s a valid .ics file.');
+      }
+    };
+    reader.readAsText(file);
+    e.target.value = ''; // reset input
+  };
 
   return (
-    <div className="space-y-6 animate-fade-in">
-      <div className="flex items-center justify-between mb-4">
-        <h4 className={`font-bold text-lg ${t.textMain}`}>Feb 2026</h4>
+    <div className="space-y-5 animate-fade-in">
+      {/* 月份导航 */}
+      <div className="flex items-center justify-between">
+        <h4 className={`font-bold text-lg ${t.textMain}`}>{monthNames[viewMonth]} {viewYear}</h4>
         <div className="flex gap-2">
-          <button className={`p-1.5 rounded-lg border ${t.border} ${t.textMuted} hover:text-indigo-400 hover:border-indigo-500/50`}><ChevronLeft className="w-4 h-4"/></button>
-          <button className={`p-1.5 rounded-lg border ${t.border} ${t.textMuted} hover:text-indigo-400 hover:border-indigo-500/50`}><ChevronRight className="w-4 h-4"/></button>
+          <button onClick={prevMonth} className={`p-1.5 rounded-lg border ${t.border} ${t.textMuted} hover:text-indigo-400 hover:border-indigo-500/50`}><ChevronLeft className="w-4 h-4"/></button>
+          <button onClick={nextMonth} className={`p-1.5 rounded-lg border ${t.border} ${t.textMuted} hover:text-indigo-400 hover:border-indigo-500/50`}><ChevronRight className="w-4 h-4"/></button>
         </div>
       </div>
 
-      <div className="grid grid-cols-7 gap-2 mb-6 text-center">
-        {['S','M','T','W','T','F','S'].map((d,i) => <div key={i} className={`text-xs font-bold ${t.textMuted}`}>{d}</div>)}
-        {/* Padding days */}
-        <div className="aspect-square"></div>
+      {/* 日历网格 */}
+      <div className="grid grid-cols-7 gap-1.5 text-center">
+        {['S','M','T','W','T','F','S'].map((d,i) => <div key={i} className={`text-xs font-bold pb-1 ${t.textMuted}`}>{d}</div>)}
+        {Array.from({length: firstDayOfWeek}).map((_, i) => <div key={`pad-${i}`} className="aspect-square"></div>)}
         {days.map(d => {
            const dayTasks = getTaskForDay(d);
            const hasPending = dayTasks.some(tk => tk.status === 'pending');
            const hasDone = dayTasks.some(tk => tk.status === 'done');
+           const isSelected = selectedDay === d;
+           const isTodayDate = isToday(d);
+           let dayClass = `${t.bgCard} ${t.border} ${t.textMain}`;
+           if (isSelected) dayClass = 'bg-indigo-500 border-indigo-500 text-white font-bold';
+           else if (isTodayDate) dayClass = 'bg-indigo-500/10 border-indigo-500/30 text-indigo-400 font-bold';
            return (
-             <div key={d} className={`aspect-square flex flex-col items-center justify-center rounded-lg border text-sm relative transition-all cursor-pointer hover:border-indigo-500/50 ${d === 25 ? 'bg-indigo-500/10 border-indigo-500/30 text-indigo-400 font-bold' : `${t.bgCard} ${t.border} ${t.textMain}`}`}>
+             <div key={d} onClick={() => handleDayClick(d)} className={`aspect-square flex flex-col items-center justify-center rounded-lg border text-sm relative transition-all cursor-pointer hover:border-indigo-500/50 ${dayClass}`}>
                 {d}
-                <div className="flex gap-0.5 mt-1 absolute bottom-1">
-                  {hasDone && <span className="w-1.5 h-1.5 rounded-full bg-emerald-500"></span>}
-                  {hasPending && <span className="w-1.5 h-1.5 rounded-full bg-rose-500"></span>}
+                <div className="flex gap-0.5 mt-0.5 absolute bottom-0.5">
+                  {hasDone && <span className={`w-1.5 h-1.5 rounded-full ${isSelected ? 'bg-white/70' : 'bg-emerald-500'}`}></span>}
+                  {hasPending && <span className={`w-1.5 h-1.5 rounded-full ${isSelected ? 'bg-white/70' : 'bg-rose-500'}`}></span>}
                 </div>
              </div>
            )
         })}
       </div>
 
-      <button onClick={() => setShowAdd(!showAdd)} className={`w-full py-3 rounded-xl font-bold border border-dashed flex items-center justify-center gap-2 transition-colors ${t.border} ${t.textMuted} hover:border-indigo-500/50 hover:text-indigo-400`}>
-        <Plus className="w-4 h-4" /> Add Task
-      </button>
+      {/* 操作按钮行 */}
+      <div className="flex gap-2">
+        <button onClick={() => { setShowAdd(!showAdd); if (!showAdd) { setNewDate(selectedDay ? makeDateStr(selectedDay) : makeDateStr(today.getDate())); } }} className={`flex-1 py-2.5 rounded-xl font-bold border border-dashed flex items-center justify-center gap-2 transition-colors text-sm ${t.border} ${t.textMuted} hover:border-indigo-500/50 hover:text-indigo-400`}>
+          <Plus className="w-4 h-4" /> Add Task
+        </button>
+        <label className={`py-2.5 px-3 rounded-xl font-bold border border-dashed flex items-center justify-center gap-2 transition-colors text-sm cursor-pointer ${t.border} ${t.textMuted} hover:border-indigo-500/50 hover:text-indigo-400`}>
+          <CalendarIcon className="w-4 h-4" /> Import .ics
+          <input type="file" accept=".ics" onChange={handleImportICS} className="hidden" />
+        </label>
+      </div>
 
       {showAdd && (
-        <div className={`p-4 rounded-xl border ${t.bgCard} ${t.border} animate-slide-up`}>
-          <input type="text" placeholder="Task title..." value={newTitle} onChange={e=>setNewTitle(e.target.value)} className={`w-full bg-transparent border-b pb-2 mb-4 focus:outline-none focus:border-indigo-500 text-sm ${t.border} ${t.textMain}`} />
+        <div className={`p-4 rounded-xl border ${t.bgCard} ${t.border} animate-slide-up space-y-3`}>
+          <input type="text" placeholder="Task title..." value={newTitle} onChange={e=>setNewTitle(e.target.value)} onKeyDown={e => { if (e.key === 'Enter' && newTitle) { onCreateTask(newTitle, newDate || undefined); setNewTitle(''); setNewDate(''); setShowAdd(false); }}} className={`w-full bg-transparent border-b pb-2 focus:outline-none focus:border-indigo-500 text-sm ${t.border} ${t.textMain}`} />
+          <div className="flex items-center gap-2">
+            <label className={`text-xs ${t.textMuted}`}>Due date:</label>
+            <input type="date" value={newDate} onChange={e=>setNewDate(e.target.value)} className={`flex-1 bg-transparent border-b pb-1 focus:outline-none focus:border-indigo-500 text-sm ${t.border} ${t.textMain}`} />
+          </div>
           <div className="flex justify-end gap-2">
             <button onClick={() => setShowAdd(false)} className={`px-3 py-1.5 text-xs font-bold rounded-lg ${t.secondaryBtn}`}>Cancel</button>
-            <button onClick={() => { if(newTitle) { onCreateTask(newTitle); setNewTitle(''); setShowAdd(false); } }} className={`px-3 py-1.5 text-xs font-bold rounded-lg ${t.primaryBtn}`}>Save</button>
+            <button onClick={() => { if(newTitle) { onCreateTask(newTitle, newDate || undefined); setNewTitle(''); setNewDate(''); setShowAdd(false); } }} className={`px-3 py-1.5 text-xs font-bold rounded-lg ${t.primaryBtn}`}>Save</button>
           </div>
         </div>
       )}
 
-      <div className="mt-8 space-y-3">
-        <h4 className={`font-bold text-xs uppercase tracking-wider mb-3 ${t.textMuted}`}>Upcoming List</h4>
-        {tasks.map(tk => (
-          <div key={tk.id} onClick={() => onSelectTask(tk.id)} className={`p-3 rounded-xl border flex gap-3 cursor-pointer transition-all ${activeTaskId === tk.id ? 'border-indigo-500 bg-indigo-500/5' : `${t.bgCard} ${t.border} hover:border-indigo-500/30`}`}>
-            <div className={`w-2 h-2 mt-1.5 rounded-full shrink-0 ${tk.status === 'done' ? 'bg-emerald-500' : 'bg-rose-500'}`} />
-            <div>
-              <h4 className={`font-bold text-sm ${activeTaskId === tk.id ? 'text-indigo-400' : t.textMain}`}>{tk.title}</h4>
-              <p className={`text-[10px] mt-1 ${t.textMuted}`}>{tk.date}</p>
+      {/* 任务列表 */}
+      <div className="space-y-2">
+        <h4 className={`font-bold text-xs uppercase tracking-wider mb-2 ${t.textMuted}`}>
+          {selectedDay 
+            ? `Tasks on ${monthNames[viewMonth]} ${selectedDay}` 
+            : (sortedTasks.length > 0 ? `Tasks in ${monthNames[viewMonth]}` : `No tasks in ${monthNames[viewMonth]}`)}
+        </h4>
+        {sortedTasks.length === 0 && selectedDay && (
+          <p className={`text-sm ${t.textMuted}`}>No tasks on this day. Click "+ Add Task" to create one.</p>
+        )}
+        {sortedTasks.map(tk => (
+          <div key={tk.id} className={`p-3 rounded-xl border flex gap-3 cursor-pointer transition-all ${activeTaskId === tk.id ? 'border-indigo-500 bg-indigo-500/5' : `${t.bgCard} ${t.border} hover:border-indigo-500/30`}`}>
+            <button 
+              onClick={(e) => { e.stopPropagation(); if(onToggleTask) onToggleTask(tk.id); }}
+              className={`w-4 h-4 mt-1 rounded-full shrink-0 border-2 flex items-center justify-center transition-colors ${tk.status === 'done' ? 'bg-emerald-500 border-emerald-500' : 'border-rose-400 hover:border-emerald-400'}`}
+            >
+              {tk.status === 'done' && <CheckCircle className="w-3 h-3 text-white" />}
+            </button>
+            <div className="flex-1 min-w-0" onClick={() => onSelectTask(tk.id)}>
+              <h4 className={`font-bold text-sm ${tk.status === 'done' ? 'line-through opacity-50' : ''} ${activeTaskId === tk.id ? 'text-indigo-400' : t.textMain}`}>{tk.title}</h4>
+              <div className="flex items-center gap-2 mt-1">
+                <p className={`text-[10px] ${t.textMuted}`}>{tk.date}</p>
+                {tk.date && tk.date !== todayStr && (() => {
+                  const diff = Math.ceil((new Date(tk.date) - today.setHours(0,0,0,0)) / 86400000);
+                  if (diff < 0) return <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-rose-500/10 text-rose-500 font-bold">Overdue</span>;
+                  if (diff === 0) return null;
+                  if (diff <= 3) return <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-amber-500/10 text-amber-500 font-bold">Due in {diff}d</span>;
+                  return <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-indigo-500/10 text-indigo-400 font-bold">Due in {diff}d</span>;
+                })()}
+              </div>
             </div>
+            {onDeleteTask && (
+              <button onClick={(e) => { e.stopPropagation(); onDeleteTask(tk.id); }} className={`p-1 rounded-lg transition-colors ${t.textMuted} hover:text-rose-400`}>
+                <Trash2 className="w-3.5 h-3.5" />
+              </button>
+            )}
           </div>
         ))}
       </div>
@@ -1498,46 +1919,142 @@ function StatBox({ t, title, value }) {
 }
 
 // 4.3 Monitor Panel
-function MonitorPanel({ t, theme, events, onSimulate, enabled, onToggle }) {
+function MonitorPanel({ t, theme, events, onSimulate, onAddFocus, onDeleteEvent, onClearEvents, enabled, onToggle }) {
+  const [showPicker, setShowPicker] = useState(false);
+  const sources = ['Instagram', 'TikTok', 'Reddit', 'YouTube', 'Email', 'Twitter/X', 'Other'];
+
+  const focusCount = events.filter(e => e.type === 'focus').length;
+  const distractCount = events.filter(e => e.type === 'distract').length;
+  const isDistracted = events[0]?.type === 'distract';
+
+  // Top distraction sources
+  const srcMap = {};
+  events.filter(e => e.type === 'distract').forEach(e => {
+    const s = e.source || e.desc?.match(/→\s*(.+)/)?.[1] || 'Unknown';
+    srcMap[s] = (srcMap[s] || 0) + 1;
+  });
+  const topSrc = Object.entries(srcMap).sort((a, b) => b[1] - a[1]).slice(0, 3);
+
   return (
-    <div className="space-y-6 animate-fade-in">
-      
-      <div className={`p-5 rounded-xl border flex items-center justify-between ${t.bgCard} ${t.border}`}>
+    <div className="space-y-5 animate-fade-in">
+      {/* Toggle */}
+      <div className={`p-4 rounded-xl border flex items-center justify-between ${t.bgCard} ${t.border}`}>
         <div>
-           <h4 className={`font-bold ${t.textMain}`}>Active Monitor</h4>
-           <p className={`text-xs mt-1 ${t.textMuted}`}>Track off-screen activity</p>
+          <h4 className={`font-bold text-sm ${t.textMain}`}>Active Monitor</h4>
+          <p className={`text-[10px] mt-1 ${t.textMuted}`}>Track off-screen activity</p>
         </div>
-        <button 
-          onClick={() => onToggle(!enabled)}
-          className={`relative w-12 h-6 rounded-full transition-colors ${enabled ? 'bg-indigo-500' : (theme === 'dark' ? 'bg-gray-600' : 'bg-slate-300')}`}
-        >
-           <span className={`absolute top-1 left-1 w-4 h-4 rounded-full bg-white transition-transform ${enabled ? 'translate-x-6' : 'translate-x-0'}`} />
+        <button onClick={() => onToggle(!enabled)}
+          className={`relative w-11 h-6 rounded-full transition-colors ${enabled ? 'bg-indigo-500' : (theme === 'dark' ? 'bg-gray-600' : 'bg-slate-300')}`}>
+          <span className={`absolute top-1 left-1 w-4 h-4 rounded-full bg-white transition-transform ${enabled ? 'translate-x-5' : 'translate-x-0'}`} />
         </button>
       </div>
 
-      <button onClick={onSimulate} className={`w-full py-3 rounded-xl font-bold border border-dashed flex items-center justify-center gap-2 transition-colors ${t.border} text-rose-400 hover:bg-rose-500/10 hover:border-rose-500/50`}>
-         Simulate Distraction
-      </button>
-
-      <div className="mt-8">
-        <h4 className={`font-bold text-xs uppercase tracking-wider mb-4 ${t.textMuted}`}>Activity Timeline</h4>
-        <div className={`space-y-0 relative before:absolute before:inset-0 before:ml-2.5 before:-translate-x-px md:before:mx-auto md:before:translate-x-0 before:h-full before:w-0.5 before:bg-gradient-to-b before:from-transparent before:to-transparent ${theme === 'dark' ? 'before:via-white/10' : 'before:via-slate-300'}`}>
-          {events.map((ev, i) => (
-            <div key={ev.id} className="relative flex items-center justify-between md:justify-normal md:odd:flex-row-reverse group is-active mb-6">
-               <div className={`w-5 h-5 rounded-full border-4 shrink-0 md:order-1 md:group-odd:-translate-x-1/2 md:group-even:translate-x-1/2 shadow-sm ${ev.type === 'focus' ? 'bg-emerald-500' : 'bg-rose-500'} ${theme === 'dark' ? 'border-[#161920]' : 'border-white'} z-10 mx-auto absolute left-0 md:left-1/2 -translate-x-1/2`}></div>
-               
-               <div className={`w-[calc(100%-2rem)] md:w-[calc(50%-2rem)] ml-8 md:ml-0 p-4 rounded-xl border shadow-sm ${t.bgCard} ${t.border}`}>
-                 <div className="flex items-center justify-between mb-1">
-                    <span className={`font-bold text-sm ${ev.type === 'focus' ? 'text-emerald-400' : 'text-rose-400'}`}>{ev.type === 'focus' ? 'Focus' : 'Alert'}</span>
-                    <span className={`text-[10px] font-bold ${t.textMuted}`}>{ev.time}</span>
-                 </div>
-                 <p className={`text-xs ${t.textMain}`}>{ev.desc}</p>
-               </div>
-            </div>
-          ))}
+      {/* Stats cards */}
+      <div className="grid grid-cols-3 gap-2">
+        <div className={`p-3 rounded-xl border text-center ${t.bgCard} ${t.border}`}>
+          <p className="text-lg font-bold text-emerald-500">{focusCount}</p>
+          <p className={`text-[10px] ${t.textMuted}`}>Focus</p>
+        </div>
+        <div className={`p-3 rounded-xl border text-center ${t.bgCard} ${t.border}`}>
+          <p className="text-lg font-bold text-rose-500">{distractCount}</p>
+          <p className={`text-[10px] ${t.textMuted}`}>Distractions</p>
+        </div>
+        <div className={`p-3 rounded-xl border text-center ${t.bgCard} ${t.border}`}>
+          <p className={`text-lg font-bold ${distractCount === 0 ? 'text-emerald-500' : distractCount <= 3 ? 'text-amber-500' : 'text-rose-500'}`}>
+            {distractCount === 0 ? 'A+' : distractCount <= 2 ? 'A' : distractCount <= 4 ? 'B' : 'C'}
+          </p>
+          <p className={`text-[10px] ${t.textMuted}`}>Score</p>
         </div>
       </div>
 
+      {/* Top sources */}
+      {topSrc.length > 0 && (
+        <div className={`p-3 rounded-xl border ${t.bgCard} ${t.border}`}>
+          <p className={`text-[10px] font-bold uppercase tracking-wider mb-2 ${t.textMuted}`}>Top distractions</p>
+          <div className="flex flex-wrap gap-1.5">
+            {topSrc.map(([s, c]) => (
+              <span key={s} className="text-[11px] px-2 py-0.5 rounded-full bg-rose-500/10 text-rose-400 font-bold">{s} ({c})</span>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Action button */}
+      {isDistracted ? (
+        <button onClick={onAddFocus} className="w-full py-2.5 rounded-xl font-bold border flex items-center justify-center gap-2 text-sm transition-colors border-emerald-500/50 text-emerald-500 hover:bg-emerald-500/10">
+          <Play className="w-4 h-4" /> Back to Focus
+        </button>
+      ) : (
+        <button onClick={() => setShowPicker(!showPicker)} className={`w-full py-2.5 rounded-xl font-bold border border-dashed flex items-center justify-center gap-2 text-sm transition-colors ${t.border} text-rose-400 hover:bg-rose-500/10 hover:border-rose-500/50`}>
+          <ShieldAlert className="w-4 h-4" /> Log Distraction
+        </button>
+      )}
+
+      {/* Source picker */}
+      {showPicker && (
+        <div className={`p-3 rounded-xl border ${t.bgCard} ${t.border} animate-slide-up`}>
+          <p className={`text-xs font-bold mb-2 ${t.textMuted}`}>What distracted you?</p>
+          <div className="flex flex-wrap gap-2">
+            {sources.map(s => (
+              <button key={s} onClick={() => { onSimulate(s); setShowPicker(false); }}
+                className={`px-3 py-1.5 rounded-lg text-xs font-bold border transition-colors ${t.border} ${t.textMain} hover:border-rose-500/50 hover:text-rose-400`}>
+                {s}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Timeline */}
+      <div>
+        <div className="flex items-center justify-between mb-3">
+          <h4 className={`font-bold text-xs uppercase tracking-wider ${t.textMuted}`}>Activity Timeline</h4>
+          {events.length > 0 && (
+            <button onClick={onClearEvents} className={`text-[10px] font-bold ${t.textMuted} hover:text-rose-400 transition-colors`}>Clear all</button>
+          )}
+        </div>
+        {events.length === 0 ? (
+          <p className={`text-sm ${t.textMuted}`}>No activity yet.</p>
+        ) : (
+          <div className={`relative`}>
+            {/* 竖线放在右侧 70% 位置 */}
+            <div className={`absolute top-0 bottom-0 w-0.5 ${theme === 'dark' ? 'bg-white/10' : 'bg-slate-200'}`} style={{left: '70%'}} />
+            {events.map(ev => {
+              const isFocus = ev.type === 'focus';
+              return (
+                <div key={ev.id} className="relative mb-4 group">
+                  {/* Dot on the line */}
+                  <div className={`absolute top-4 w-4 h-4 rounded-full border-[3px] z-10 -translate-x-1/2 ${isFocus ? 'bg-emerald-500' : 'bg-rose-500'} ${theme === 'dark' ? 'border-[#161920]' : 'border-white'}`} style={{left: '70%'}} />
+                  
+                  {isFocus ? (
+                    /* Focus: 卡片居中在线附近 */
+                    <div className={`ml-[15%] mr-[5%] p-3 rounded-xl border shadow-sm ${t.bgCard} ${t.border} border-emerald-500/20`}>
+                      <div className="flex items-center justify-between mb-1">
+                        <span className="font-bold text-xs text-emerald-500">Focus</span>
+                        <span className={`text-[10px] font-bold ${t.textMuted}`}>{ev.time}</span>
+                      </div>
+                      <p className={`text-xs ${t.textMain}`}>{ev.desc}</p>
+                    </div>
+                  ) : (
+                    /* Distraction: 卡片偏到最左边，远离线 */
+                    <div className={`mr-[38%] p-3 rounded-xl border shadow-sm ${t.bgCard} ${t.border} border-rose-500/20`}>
+                      <div className="flex items-center justify-between mb-1">
+                        <span className="font-bold text-xs text-rose-400">Alert</span>
+                        <span className={`text-[10px] font-bold ${t.textMuted}`}>{ev.time}</span>
+                      </div>
+                      <p className={`text-xs ${t.textMain}`}>{ev.desc}</p>
+                    </div>
+                  )}
+
+                  <button onClick={() => onDeleteEvent(ev.id)} className={`absolute right-0 top-1 p-1 rounded-lg opacity-0 group-hover:opacity-100 transition-opacity ${t.textMuted} hover:text-rose-400`}>
+                    <X className="w-3 h-3" />
+                  </button>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
     </div>
   );
 }
@@ -1582,6 +2099,35 @@ function SettingsPanel({ t, settings, setSettings, showToast }) {
              <span className={`text-sm font-bold ${t.textMain}`}>Distract Threshold (mins)</span>
              <input type="number" value={settings.distractThreshold} onChange={(e) => handleChange('distractThreshold', e.target.value)} className={`w-16 bg-transparent border-b text-center focus:outline-none focus:border-indigo-500 ${t.border} ${t.textMain}`} />
           </div>
+          <div className={`p-4 rounded-xl border flex items-center justify-between ${t.bgCard} ${t.border}`}>
+             <span className={`text-sm font-bold ${t.textMain}`}>Auto Breakdown</span>
+             <button onClick={() => handleChange('autoBreakdown', !settings.autoBreakdown)} className={`relative w-10 h-5 rounded-full transition-colors ${settings.autoBreakdown ? 'bg-indigo-500' : (settings.theme === 'dark' ? 'bg-gray-600' : 'bg-slate-300')}`}>
+               <span className={`absolute top-1 left-1 w-3 h-3 rounded-full bg-white transition-transform ${settings.autoBreakdown ? 'translate-x-5' : 'translate-x-0'}`} />
+             </button>
+          </div>
+        </div>
+      </div>
+
+      {/* Calendar Integration */}
+      <div>
+        <h4 className={`font-bold text-xs uppercase tracking-wider mb-3 mt-8 ${t.textMuted}`}>Calendar Integration</h4>
+        <div className="space-y-3">
+          <button onClick={() => showToast('Google Calendar integration coming soon! Use .ics import for now.', 'info')} className={`w-full p-4 rounded-xl border flex items-center gap-3 transition-all ${t.bgCard} ${t.border} hover:border-indigo-500/30`}>
+            <CalendarIcon className={`w-5 h-5 ${t.textMuted}`} />
+            <div className="text-left flex-1">
+              <span className={`text-sm font-bold ${t.textMain}`}>Connect Google Calendar</span>
+              <p className={`text-[10px] mt-0.5 ${t.textMuted}`}>Sync events automatically via OAuth</p>
+            </div>
+            <span className={`text-[10px] px-2 py-1 rounded-full font-bold border ${settings.theme === 'dark' ? 'bg-amber-500/10 text-amber-400 border-amber-500/20' : 'bg-amber-50 text-amber-700 border-amber-200'}`}>Soon</span>
+          </button>
+          <button onClick={() => showToast('Apple Calendar integration coming soon! Use .ics import for now.', 'info')} className={`w-full p-4 rounded-xl border flex items-center gap-3 transition-all ${t.bgCard} ${t.border} hover:border-indigo-500/30`}>
+            <CalendarIcon className={`w-5 h-5 ${t.textMuted}`} />
+            <div className="text-left flex-1">
+              <span className={`text-sm font-bold ${t.textMain}`}>Connect Apple Calendar</span>
+              <p className={`text-[10px] mt-0.5 ${t.textMuted}`}>Sync via iCloud CalDAV</p>
+            </div>
+            <span className={`text-[10px] px-2 py-1 rounded-full font-bold border ${settings.theme === 'dark' ? 'bg-amber-500/10 text-amber-400 border-amber-500/20' : 'bg-amber-50 text-amber-700 border-amber-200'}`}>Soon</span>
+          </button>
         </div>
       </div>
 
@@ -1589,9 +2135,37 @@ function SettingsPanel({ t, settings, setSettings, showToast }) {
       <div>
         <h4 className={`font-bold text-xs uppercase tracking-wider mb-3 mt-8 ${t.textMuted}`}>Developer & Data</h4>
         <div className="space-y-4">
+           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+             <div>
+               <label className={`block text-xs mb-2 ${t.textMuted}`}>Task / Calendar Storage</label>
+               <select value={settings.taskStorage} onChange={(e) => handleChange('taskStorage', e.target.value)} className={`w-full px-3 py-2 rounded-lg border text-xs focus:outline-none focus:border-indigo-500 ${t.bgInput} ${t.border} ${t.textMain}`}>
+                 <option value="mysql">MySQL</option>
+                 <option value="mongodb">MongoDB</option>
+               </select>
+             </div>
+             <div>
+               <label className={`block text-xs mb-2 ${t.textMuted}`}>Notes / Logs Storage</label>
+               <select value={settings.noteStorage} onChange={(e) => handleChange('noteStorage', e.target.value)} className={`w-full px-3 py-2 rounded-lg border text-xs focus:outline-none focus:border-indigo-500 ${t.bgInput} ${t.border} ${t.textMain}`}>
+                 <option value="mongodb">MongoDB</option>
+                 <option value="mysql">MySQL</option>
+               </select>
+             </div>
+           </div>
            <div>
-             <label className={`block text-xs mb-2 flex items-center gap-2 ${t.textMuted}`}><Database className="w-3 h-3"/> Local Storage Path</label>
+             <label className={`block text-xs mb-2 ${t.textMuted}`}>Deployment Provider</label>
+             <select value={settings.deploymentProvider} onChange={(e) => handleChange('deploymentProvider', e.target.value)} className={`w-full px-3 py-2 rounded-lg border text-xs focus:outline-none focus:border-indigo-500 ${t.bgInput} ${t.border} ${t.textMain}`}>
+               <option value="gcp">Google Cloud Platform</option>
+               <option value="aws">AWS</option>
+               <option value="local">Local</option>
+             </select>
+           </div>
+           <div>
+             <label className={`block text-xs mb-2 flex items-center gap-2 ${t.textMuted}`}><Database className="w-3 h-3"/> Storage Path</label>
              <input type="text" value={settings.storagePath} onChange={(e) => handleChange('storagePath', e.target.value)} className={`w-full px-3 py-2 rounded-lg border text-xs focus:outline-none focus:border-indigo-500 ${t.bgInput} ${t.border} ${t.textMain}`} />
+           </div>
+           <div>
+             <label className={`block text-xs mb-2 ${t.textMuted}`}>Backend URL</label>
+             <input type="text" value={settings.backendUrl} onChange={(e) => handleChange('backendUrl', e.target.value)} className={`w-full px-3 py-2 rounded-lg border text-xs focus:outline-none focus:border-indigo-500 ${t.bgInput} ${t.border} ${t.textMain}`} />
            </div>
            <div>
              <label className={`block text-xs mb-2 flex items-center gap-2 ${t.textMuted}`}><Key className="w-3 h-3"/> AI API Key</label>

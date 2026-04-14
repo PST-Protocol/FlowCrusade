@@ -26,18 +26,22 @@ model User {
   leaderboardScores   LeaderboardScore[]
   friendsAdded        Friendship[] @relation("UserFriends")
   friendsAddedBy      Friendship[] @relation("FriendUsers")
+  notes               Note[]
+  monitorEvents       MonitorEvent[]
 }
 
 model Task {
-  id          Int      @id @default(autoincrement())
+  id          Int       @id @default(autoincrement())
   userId      Int
   title       String
-  isCompleted Boolean  @default(false)
+  description String?
+  isCompleted Boolean   @default(false)
+  dueDate     DateTime? @db.Date
   parentId    Int?
-  parent      Task?    @relation("SubTasks", fields: [parentId], references: [id])
-  subTasks    Task[]   @relation("SubTasks")
-  createdAt   DateTime @default(now())
-  user        User     @relation(fields: [userId], references: [id])
+  parent      Task?     @relation("SubTasks", fields: [parentId], references: [id])
+  subTasks    Task[]    @relation("SubTasks")
+  createdAt   DateTime  @default(now())
+  user        User      @relation(fields: [userId], references: [id])
   sessions    FocusSession[]
 }
 
@@ -95,4 +99,27 @@ model LeaderboardScore {
   rank           Int?
   user           User     @relation(fields: [userId], references: [id])
   @@unique([userId, weekStartDate])
+}
+
+// ========================================
+// Stella's models: Quick Notes + Monitor
+// ========================================
+
+model Note {
+  id        Int      @id @default(autoincrement())
+  userId    Int
+  text      String
+  createdAt DateTime @default(now())
+  user      User     @relation(fields: [userId], references: [id])
+}
+
+model MonitorEvent {
+  id          Int      @id @default(autoincrement())
+  userId      Int
+  type        String   // "focus" | "distract"
+  description String
+  source      String?  // e.g. "Instagram", "Email"
+  durationSec Int?     // duration of distraction in seconds
+  createdAt   DateTime @default(now())
+  user        User     @relation(fields: [userId], references: [id])
 }
