@@ -104,43 +104,6 @@ const loadNotes = () => {
   ];
 };
 
-const loadSettings = () => {
-  try {
-    const saved = localStorage.getItem('fc_settings');
-    if (saved) {
-      return {
-        theme: 'light',
-        monitorEnabled: true,
-        distractThreshold: 5,
-        storagePath: '/Users/local/flow-crusade/data',
-        apiKey: 'sk-mock-123456',
-        notifications: true,
-        taskStorage: 'mysql',
-        noteStorage: 'mongodb',
-        monitorStorage: 'mongodb',
-        deploymentProvider: 'gcp',
-        backendUrl: 'https://api.flowcrusade.app',
-        autoBreakdown: true,
-        ...JSON.parse(saved)
-      };
-    }
-  } catch (e) { /* ignore */ }
-  return {
-    theme: 'light',
-    monitorEnabled: true,
-    distractThreshold: 5,
-    storagePath: '/Users/local/flow-crusade/data',
-    apiKey: 'sk-mock-123456',
-    notifications: true,
-    taskStorage: 'mysql',
-    noteStorage: 'mongodb',
-    monitorStorage: 'mongodb',
-    deploymentProvider: 'gcp',
-    backendUrl: 'https://api.flowcrusade.app',
-    autoBreakdown: true,
-  };
-};
-
 // ==========================================
 // 2. THEME DEFINITIONS
 // ==========================================
@@ -211,68 +174,6 @@ function clamp01(x) { return Math.max(0, Math.min(1, x)); }
 function formatMins(m) { const v = Math.max(0, Math.round(Number(m) || 0)); return `${v}m`; }
 
 
-function updateTaskTree(nodes, targetId, updater) {
-  return nodes.map(node => {
-    if (node.id === targetId) return updater(node);
-    if (!node.children || node.children.length === 0) return node;
-    return { ...node, children: updateTaskTree(node.children, targetId, updater) };
-  });
-}
-
-function findTaskNode(nodes, targetId) {
-  for (const node of nodes) {
-    if (node.id === targetId) return node;
-    if (node.children?.length) {
-      const found = findTaskNode(node.children, targetId);
-      if (found) return found;
-    }
-  }
-  return null;
-}
-
-function generateBreakdownChildren(task) {
-  const baseId = `${task.id}-${Date.now()}`;
-  const title = (task.title || '').toLowerCase();
-  const templates = [
-    ['Clarify the goal', 'Write a 1-2 sentence outcome so the next step is obvious.'],
-    ['Gather what you need', 'Collect links, files, notes, or materials before you start.'],
-    ['Start the first small step', 'Spend 5-10 minutes on the easiest executable action.'],
-  ];
-
-  if (/essay|paper|write|report|draft/.test(title)) {
-    templates.splice(0, templates.length,
-      ['Define the argument', 'Write the main claim and the 2-3 points you want to support.'],
-      ['Collect evidence', 'Pull sources, examples, or quotes into one place.'],
-      ['Draft the first section', 'Write the easiest paragraph first to reduce startup friction.'],
-      ['Revise and finalize', 'Check structure, citations, and polish the final draft.'],
-    );
-  } else if (/study|exam|quiz|midterm|chapter|read/.test(title)) {
-    templates.splice(0, templates.length,
-      ['List the topics', 'Write down the concepts or pages you need to cover.'],
-      ['Review one chunk', 'Study a single section and summarize it in your own words.'],
-      ['Do active recall', 'Test yourself with a few questions or practice problems.'],
-      ['Wrap up weak spots', 'Mark confusing parts and review them once more.'],
-    );
-  } else if (/meeting|sync|slide|presentation/.test(title)) {
-    templates.splice(0, templates.length,
-      ['Outline the agenda', 'Decide the main points and the order you want to present them.'],
-      ['Prepare materials', 'Gather slides, notes, links, or supporting assets.'],
-      ['Draft talking points', 'Write concise bullets for what you need to say.'],
-      ['Final review', 'Check timing, flow, and anything that still needs cleanup.'],
-    );
-  }
-
-  return templates.map(([childTitle, desc], idx) => ({
-    id: `${baseId}-${idx + 1}`,
-    title: childTitle,
-    progress: 0,
-    status: 'pending',
-    desc,
-    children: [],
-  }));
-}
-
-
 // ==========================================
 // 3. MAIN APP COMPONENT
 // ==========================================
@@ -310,11 +211,14 @@ export default function FlowCrusadeApp() {
   useEffect(() => {
     localStorage.setItem('fc_notes', JSON.stringify(notes));
   }, [notes]);
-  const [settings, setSettings] = useState(loadSettings);
-
-  useEffect(() => {
-    localStorage.setItem('fc_settings', JSON.stringify(settings));
-  }, [settings]);
+  const [settings, setSettings] = useState({
+    theme: 'light',
+    monitorEnabled: true,
+    distractThreshold: 5,
+    storagePath: '/Users/local/flow-crusade/data',
+    apiKey: 'sk-mock-123456',
+    notifications: true
+  });
 
   // UI States
   const [activePanel, setActivePanel] = useState(null); // 'calendar'|'stats'|'monitor'|'settings'
@@ -348,6 +252,43 @@ export default function FlowCrusadeApp() {
   const openRewards = () => setIsRewardsOpen(true);
   const closeRewards = () => setIsRewardsOpen(false);
 
+  const requestAIBreakdown = async (taskTitle, taskDesc = '') => {
+    const response = await fetch('http://localhost:8787/api/breakdown', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        task: taskTitle,
+        context: taskDesc,
+      }),
+    });
+
+    if (!response.ok) {
+      let err = {};
+      try {
+        err = await response.json();
+      } catch {
+        err = { error: 'AI breakdown failed' };
+      }
+      throw new Error(err.error || 'AI breakdown failed');
+    }
+
+    return response.json();
+  };
+
+  const convertAiStepsToChildren = (steps, parentId, source = 'ai') => {
+    return steps.map((step, index) => ({
+      id: `${parentId}-ai-${index + 1}`,
+      title: step.title,
+      progress: 0,
+      status: step.status || 'pending',
+      desc: `${step.desc || ''}${step.estimatedMinutes ? ` (${step.estimatedMinutes} min)` : ''}`,
+      estimatedMinutes: step.estimatedMinutes || 10,
+      priority: step.priority || index + 1,
+      aiSource: source,
+      children: Array.isArray(step.children) ? step.children : [],
+    }));
+  };
+
   const createNewTask = (title, date) => {
     const d = date || new Date().toISOString().split('T')[0];
     const newTask = {
@@ -376,17 +317,76 @@ export default function FlowCrusadeApp() {
     ));
   };
 
-  const handleBreakdown = (taskIdToBreakdown) => {
-    const target = findTaskNode(tasks, taskIdToBreakdown);
+  const handleBreakdown = async (taskIdToBreakdown) => {
+    try {
+      const findTaskById = (list, id) => {
+        for (const item of list) {
+          if (item.id === id) return item;
+          if (item.children?.length) {
+            const found = findTaskById(item.children, id);
+            if (found) return found;
+          }
+        }
+        return null;
+      };
 
-    if (settings.autoBreakdown && target && (!target.children || target.children.length === 0)) {
-      const generated = generateBreakdownChildren(target);
-      setTasks(prev => updateTaskTree(prev, taskIdToBreakdown, node => ({ ...node, children: generated })));
-      showToast('AI mock: generated a starter breakdown');
+      const root = tasks.find(t => t.id === activeTaskId) || tasks.find(t => t.id === taskIdToBreakdown);
+      if (!root) return;
+
+      const targetNode = taskIdToBreakdown === root.id ? root : findTaskById(root.children || [], taskIdToBreakdown);
+      if (!targetNode) return;
+
+      showToast('Generating AI breakdown...');
+
+      const result = await requestAIBreakdown(targetNode.title, targetNode.desc || '');
+      const aiChildren = convertAiStepsToChildren(result.steps || [], targetNode.id, result.source || 'ai');
+
+      const updateNodeChildren = (list, id, newChildren) => {
+        return list.map(item => {
+          if (item.id === id) {
+            return {
+              ...item,
+              children: newChildren,
+            };
+          }
+          if (item.children?.length) {
+            return {
+              ...item,
+              children: updateNodeChildren(item.children, id, newChildren),
+            };
+          }
+          return item;
+        });
+      };
+
+      setTasks(prev =>
+        prev.map(task => {
+          if (task.id !== root.id) return task;
+          if (targetNode.id === root.id) {
+            return {
+              ...task,
+              children: aiChildren,
+            };
+          }
+          return {
+            ...task,
+            children: updateNodeChildren(task.children || [], targetNode.id, aiChildren),
+          };
+        })
+      );
+
+      if (targetNode.id === root.id) {
+        setPath([root.id]);
+      } else {
+        setPath(prev => [...prev, targetNode.id]);
+      }
+
+      setIsFocusedMode(true);
+      showToast('AI breakdown generated');
+    } catch (error) {
+      console.error(error);
+      showToast('AI breakdown failed', 'warning');
     }
-
-    setPath(prev => [...prev, taskIdToBreakdown]);
-    setIsFocusedMode(true);
   };
 
   const handleReturnToRoot = () => {
@@ -545,29 +545,31 @@ export default function FlowCrusadeApp() {
                   </>
                 )}
 
-                {path.map((stepId, index) => {
-                  let stepTitle = "Subtask";
+                {(path.length > 0 && path[0] === activeRootTask?.id ? path.slice(1) : path).map((stepId, index, normalizedPath) => {
+                  let stepTitle = 'Subtask';
                   let list = activeRootTask?.children || [];
-                  // Traverse to find title
-                  for(let i=0; i<=index; i++){
-                    const node = list.find(n => n.id === path[i]);
-                    if(node) {
+                  for (let i = 0; i <= index; i++) {
+                    const node = list.find(n => n.id === normalizedPath[i]);
+                    if (node) {
                       stepTitle = node.title;
                       list = node.children || [];
                     }
                   }
-                  const isLast = index === path.length - 1;
+                  const isLast = index === normalizedPath.length - 1;
                   return (
                     <React.Fragment key={stepId}>
                       <ChevronRight className={`w-4 h-4 ${t.textMuted}`} />
                       <button 
-                        onClick={() => setPath(path.slice(0, index + 1))}
+                        onClick={() => {
+                          const base = path.length > 0 && path[0] === activeRootTask?.id ? [activeRootTask.id] : [];
+                          setPath([...base, ...normalizedPath.slice(0, index + 1)]);
+                        }}
                         className={`truncate max-w-[150px] transition-colors ${isLast ? 'text-indigo-500 font-bold' : `${t.textMuted} hover:text-indigo-500`}`}
                       >
                         {stepTitle}
                       </button>
                     </React.Fragment>
-                  )
+                  );
                 })}
              </div>
 
@@ -816,9 +818,12 @@ function ViewCE({ t, theme, rootTask, path, onBreakdown, showToast }) {
   // Resolve current context based on path
   let currentContext = rootTask;
   let contextList = rootTask.children || [];
-  
-  for (let i = 0; i < path.length; i++) {
-    const node = contextList.find(n => n.id === path[i]);
+
+  const normalizedPath =
+    path.length > 0 && path[0] === rootTask.id ? path.slice(1) : path;
+
+  for (let i = 0; i < normalizedPath.length; i++) {
+    const node = contextList.find(n => n.id === normalizedPath[i]);
     if (node) {
       currentContext = node;
       contextList = node.children || [];
@@ -828,7 +833,7 @@ function ViewCE({ t, theme, rootTask, path, onBreakdown, showToast }) {
   // STATE D: Specific Focus View
   if (focusingSubtask) {
     const activeSubtask = contextList.find(n => n.id === focusingSubtask) || currentContext;
-    return <FocusDetailView t={t} theme={theme} task={activeSubtask} onBack={() => setFocusingSubtask(null)} onComplete={() => {showToast("Subtask Completed!", 'success'); setFocusingSubtask(null);}} onFurtherBreakdown={() => { setFocusingSubtask(null); onBreakdown(activeSubtask.id); }} />
+    return <FocusDetailView t={t} theme={theme} task={activeSubtask} onBack={() => setFocusingSubtask(null)} onComplete={() => {showToast("Subtask Completed!", 'success'); setFocusingSubtask(null);}} onFurtherBreakdown={() => { setFocusingSubtask(null); onBreakdown(activeSubtask.id); }} onRegenerate={() => { setFocusingSubtask(null); onBreakdown(activeSubtask.id); }} />
   }
 
   // STATE C / E: List View
@@ -840,8 +845,8 @@ function ViewCE({ t, theme, rootTask, path, onBreakdown, showToast }) {
           <h2 className={`text-2xl font-bold mb-2 ${t.textMain}`}>{currentContext.title}</h2>
           <p className={`text-sm ${t.textMuted}`}>Select a step to focus on, or break it down further.</p>
         </div>
-        <button onClick={() => showToast("AI Mock: Regenerating structure...", 'success')} className={`px-4 py-2 rounded-xl text-sm font-semibold flex items-center gap-2 transition-colors ${t.secondaryBtn}`}>
-          <RefreshCw className="w-4 h-4" /> Global Retry
+        <button onClick={() => onBreakdown(currentContext.id)} className={`px-4 py-2 rounded-xl text-sm font-semibold flex items-center gap-2 transition-colors ${t.secondaryBtn}`}>
+          <RefreshCw className="w-4 h-4" /> Regenerate
         </button>
       </div>
 
@@ -854,9 +859,22 @@ function ViewCE({ t, theme, rootTask, path, onBreakdown, showToast }) {
                 {index + 1}
               </div>
               <div className="flex-1">
-                <h3 className={`text-lg font-bold transition-colors cursor-pointer hover:text-indigo-400 ${t.textMain}`} onClick={() => setFocusingSubtask(sub.id)}>
-                  {sub.title}
-                </h3>
+                <div className="flex items-center gap-2 flex-wrap">
+                  <h3 className={`text-lg font-bold transition-colors cursor-pointer hover:text-indigo-400 ${t.textMain}`} onClick={() => setFocusingSubtask(sub.id)}>
+                    {sub.title}
+                  </h3>
+                  {sub.aiSource && (
+                    <span
+                      className={`text-[10px] px-2 py-0.5 rounded-full font-bold uppercase tracking-wide ${
+                        sub.aiSource === 'gemini'
+                          ? 'bg-indigo-500/10 text-indigo-400 border border-indigo-500/20'
+                          : 'bg-amber-500/10 text-amber-500 border border-amber-500/20'
+                      }`}
+                    >
+                      {sub.aiSource === 'gemini' ? 'AI' : 'Local'}
+                    </span>
+                  )}
+                </div>
                 <div className="mt-2">
                    <CollapsibleText t={t} text={sub.desc} defaultExpanded={false} />
                 </div>
@@ -872,7 +890,7 @@ function ViewCE({ t, theme, rootTask, path, onBreakdown, showToast }) {
 
             <div className="flex items-center gap-2 self-end md:self-center bg-transparent p-1 rounded-xl">
               <button 
-                onClick={() => showToast("Mock: Regenerating this step...")}
+                onClick={() => onBreakdown(sub.id)}
                 className={`p-2.5 rounded-lg transition-colors tooltip-trigger ${t.textMuted} hover:text-indigo-400 hover:bg-indigo-500/10`}
                 title="Regenerate / Modify"
               >
@@ -910,22 +928,48 @@ function ViewCE({ t, theme, rootTask, path, onBreakdown, showToast }) {
 }
 
 // STATE D: Focus Detail View
-function FocusDetailView({ t, theme, task, onComplete, onBack, onFurtherBreakdown }) {
-  const [timeLeft, setTimeLeft] = useState(25 * 60);
+function FocusDetailView({ t, theme, task, onComplete, onBack, onFurtherBreakdown, onRegenerate }) {
+  const initialMinutes = task?.estimatedMinutes || 25;
+  const [selectedMinutes, setSelectedMinutes] = useState(initialMinutes);
+  const [customMinutes, setCustomMinutes] = useState(String(initialMinutes));
+  const [timeLeft, setTimeLeft] = useState(initialMinutes * 60);
   const [isActive, setIsActive] = useState(false);
+
+  useEffect(() => {
+    const m = task?.estimatedMinutes || 25;
+    setSelectedMinutes(m);
+    setCustomMinutes(String(m));
+    setTimeLeft(m * 60);
+    setIsActive(false);
+  }, [task?.id]);
 
   useEffect(() => {
     let interval = null;
     if (isActive && timeLeft > 0) {
-      interval = setInterval(() => setTimeLeft(timeLeft - 1), 1000);
+      interval = setInterval(() => setTimeLeft(prev => prev - 1), 1000);
     } else if (timeLeft === 0) {
       setIsActive(false);
     }
     return () => clearInterval(interval);
   }, [isActive, timeLeft]);
 
+  const updateMinutes = (m) => {
+    const safeMinutes = Math.max(1, Math.min(180, Number(m) || 25));
+    setSelectedMinutes(safeMinutes);
+    setCustomMinutes(String(safeMinutes));
+    setIsActive(false);
+    setTimeLeft(safeMinutes * 60);
+  };
+
+  const applyCustomMinutes = () => {
+    updateMinutes(customMinutes);
+  };
+
   const toggleTimer = () => setIsActive(!isActive);
-  const resetTimer = () => { setIsActive(false); setTimeLeft(25 * 60); };
+  const resetTimer = () => {
+    setIsActive(false);
+    setTimeLeft(selectedMinutes * 60);
+  };
   const formatTime = (s) => `${Math.floor(s / 60).toString().padStart(2, '0')}:${(s % 60).toString().padStart(2, '0')}`;
 
   return (
@@ -944,10 +988,51 @@ function FocusDetailView({ t, theme, task, onComplete, onBack, onFurtherBreakdow
           <span className="inline-block px-4 py-1.5 bg-indigo-500/10 text-indigo-400 rounded-full text-xs font-bold tracking-widest uppercase mb-6 border border-indigo-500/20">Hyper Focus Mode</span>
           <h2 className={`text-2xl md:text-3xl font-bold mb-6 leading-tight ${t.textMain}`}>{task.title}</h2>
           
-          <div className="max-w-xl mx-auto mb-12">
+          <div className="max-w-xl mx-auto mb-8">
             <p className={`text-base leading-relaxed ${t.textMuted}`}>
               {task.desc || "Focus on this single step. Eliminate distractions. You can do this."}
             </p>
+          </div>
+
+          <div className="flex items-center justify-center gap-2 flex-wrap mb-4">
+            {[5, 10, 15, 25, 45].map((m) => (
+              <button
+                key={m}
+                onClick={() => updateMinutes(m)}
+                disabled={isActive}
+                className={`px-4 py-2 rounded-xl text-sm font-bold border transition-colors ${
+                  selectedMinutes === m
+                    ? 'bg-indigo-500 text-white border-indigo-500'
+                    : `${t.secondaryBtn}`
+                } ${isActive ? 'opacity-50 cursor-not-allowed' : ''}`}
+              >
+                {m} min
+              </button>
+            ))}
+          </div>
+
+          <div className="flex items-center justify-center gap-2 mb-8">
+            <input
+              type="number"
+              min="1"
+              max="180"
+              value={customMinutes}
+              disabled={isActive}
+              onChange={(e) => setCustomMinutes(e.target.value)}
+              className={`w-28 px-4 py-3 rounded-xl border text-center text-base font-semibold outline-none ${t.bgInput} ${t.border} ${t.textMain} ${isActive ? 'opacity-50 cursor-not-allowed' : ''}`}
+              placeholder="mins"
+            />
+            <button
+              onClick={applyCustomMinutes}
+              disabled={isActive}
+              className={`px-4 py-3 rounded-xl font-bold transition-colors ${
+                isActive
+                  ? 'bg-gray-200 text-gray-400 cursor-not-allowed'
+                  : 'bg-indigo-500 text-white hover:bg-indigo-400'
+              }`}
+            >
+              Apply
+            </button>
           </div>
 
           {/* Timer Display */}
@@ -970,11 +1055,14 @@ function FocusDetailView({ t, theme, task, onComplete, onBack, onFurtherBreakdow
             </button>
           </div>
 
-          <div className={`flex flex-col sm:flex-row items-center justify-center gap-4 mt-8 pt-8 border-t w-full ${t.border}`}>
-            <button onClick={onFurtherBreakdown} className={`px-6 py-3 rounded-xl font-bold transition-colors w-full sm:w-auto ${t.secondaryBtn}`}>
+          <div className={`grid grid-cols-1 sm:grid-cols-3 items-center justify-center gap-4 mt-8 pt-8 border-t w-full ${t.border}`}>
+            <button onClick={onFurtherBreakdown} className={`px-6 py-3 rounded-xl font-bold transition-colors w-full ${t.secondaryBtn}`}>
               Too hard? Breakdown further
             </button>
-            <button onClick={onComplete} className="px-6 py-3 rounded-xl bg-emerald-500/10 border border-emerald-500/20 text-emerald-500 font-bold hover:bg-emerald-500/20 transition-colors flex items-center justify-center gap-2 w-full sm:w-auto">
+            <button onClick={onRegenerate} className="px-6 py-3 rounded-xl bg-amber-50 border border-amber-200 text-amber-700 font-bold hover:bg-amber-100 transition-colors flex items-center justify-center gap-2 w-full">
+              <RefreshCw className="w-5 h-5" /> Regenerate
+            </button>
+            <button onClick={onComplete} className="px-6 py-3 rounded-xl bg-emerald-500/10 border border-emerald-500/20 text-emerald-500 font-bold hover:bg-emerald-500/20 transition-colors flex items-center justify-center gap-2 w-full">
               <CheckCircle className="w-5 h-5" /> Mark Completed
             </button>
           </div>
@@ -1270,40 +1358,17 @@ function LeftPanels({ t, theme, activePanel, close, stats, events, tasks, settin
 // Quick Notes content (used both in the right sidebar and the mobile drawer)
 function QuickNotesPanel({ t, theme, notes, setNotes, showHeader = true, onClose }) {
   const [val, setVal] = useState('');
-  const [noteType, setNoteType] = useState('quick');
 
   const addNote = () => {
     const text = val.trim();
     if (!text) return;
     const time = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-    const note = { id: `${Date.now()}-${Math.random().toString(16).slice(2)}`, text, time, type: noteType };
+    const note = { id: `${Date.now()}-${Math.random().toString(16).slice(2)}`, text, time };
     setNotes([note, ...notes]);
     setVal('');
   };
 
   const removeNote = (id) => setNotes(notes.filter(n => n.id !== id));
-  const exportNotes = () => {
-    const blob = new Blob([JSON.stringify(notes, null, 2)], { type: 'application/json' });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement('a');
-    link.href = url;
-    link.download = 'flow-crusade-notes.json';
-    link.click();
-    URL.revokeObjectURL(url);
-  };
-  const importNotes = (file) => {
-    if (!file) return;
-    const reader = new FileReader();
-    reader.onload = (e) => {
-      try {
-        const parsed = JSON.parse(String(e.target?.result || '[]'));
-        if (Array.isArray(parsed)) setNotes(parsed);
-      } catch {
-        alert('Invalid JSON file.');
-      }
-    };
-    reader.readAsText(file);
-  };
 
   return (
     <div className="flex flex-col h-full">
@@ -2099,12 +2164,6 @@ function SettingsPanel({ t, settings, setSettings, showToast }) {
              <span className={`text-sm font-bold ${t.textMain}`}>Distract Threshold (mins)</span>
              <input type="number" value={settings.distractThreshold} onChange={(e) => handleChange('distractThreshold', e.target.value)} className={`w-16 bg-transparent border-b text-center focus:outline-none focus:border-indigo-500 ${t.border} ${t.textMain}`} />
           </div>
-          <div className={`p-4 rounded-xl border flex items-center justify-between ${t.bgCard} ${t.border}`}>
-             <span className={`text-sm font-bold ${t.textMain}`}>Auto Breakdown</span>
-             <button onClick={() => handleChange('autoBreakdown', !settings.autoBreakdown)} className={`relative w-10 h-5 rounded-full transition-colors ${settings.autoBreakdown ? 'bg-indigo-500' : (settings.theme === 'dark' ? 'bg-gray-600' : 'bg-slate-300')}`}>
-               <span className={`absolute top-1 left-1 w-3 h-3 rounded-full bg-white transition-transform ${settings.autoBreakdown ? 'translate-x-5' : 'translate-x-0'}`} />
-             </button>
-          </div>
         </div>
       </div>
 
@@ -2135,37 +2194,9 @@ function SettingsPanel({ t, settings, setSettings, showToast }) {
       <div>
         <h4 className={`font-bold text-xs uppercase tracking-wider mb-3 mt-8 ${t.textMuted}`}>Developer & Data</h4>
         <div className="space-y-4">
-           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-             <div>
-               <label className={`block text-xs mb-2 ${t.textMuted}`}>Task / Calendar Storage</label>
-               <select value={settings.taskStorage} onChange={(e) => handleChange('taskStorage', e.target.value)} className={`w-full px-3 py-2 rounded-lg border text-xs focus:outline-none focus:border-indigo-500 ${t.bgInput} ${t.border} ${t.textMain}`}>
-                 <option value="mysql">MySQL</option>
-                 <option value="mongodb">MongoDB</option>
-               </select>
-             </div>
-             <div>
-               <label className={`block text-xs mb-2 ${t.textMuted}`}>Notes / Logs Storage</label>
-               <select value={settings.noteStorage} onChange={(e) => handleChange('noteStorage', e.target.value)} className={`w-full px-3 py-2 rounded-lg border text-xs focus:outline-none focus:border-indigo-500 ${t.bgInput} ${t.border} ${t.textMain}`}>
-                 <option value="mongodb">MongoDB</option>
-                 <option value="mysql">MySQL</option>
-               </select>
-             </div>
-           </div>
            <div>
-             <label className={`block text-xs mb-2 ${t.textMuted}`}>Deployment Provider</label>
-             <select value={settings.deploymentProvider} onChange={(e) => handleChange('deploymentProvider', e.target.value)} className={`w-full px-3 py-2 rounded-lg border text-xs focus:outline-none focus:border-indigo-500 ${t.bgInput} ${t.border} ${t.textMain}`}>
-               <option value="gcp">Google Cloud Platform</option>
-               <option value="aws">AWS</option>
-               <option value="local">Local</option>
-             </select>
-           </div>
-           <div>
-             <label className={`block text-xs mb-2 flex items-center gap-2 ${t.textMuted}`}><Database className="w-3 h-3"/> Storage Path</label>
+             <label className={`block text-xs mb-2 flex items-center gap-2 ${t.textMuted}`}><Database className="w-3 h-3"/> Local Storage Path</label>
              <input type="text" value={settings.storagePath} onChange={(e) => handleChange('storagePath', e.target.value)} className={`w-full px-3 py-2 rounded-lg border text-xs focus:outline-none focus:border-indigo-500 ${t.bgInput} ${t.border} ${t.textMain}`} />
-           </div>
-           <div>
-             <label className={`block text-xs mb-2 ${t.textMuted}`}>Backend URL</label>
-             <input type="text" value={settings.backendUrl} onChange={(e) => handleChange('backendUrl', e.target.value)} className={`w-full px-3 py-2 rounded-lg border text-xs focus:outline-none focus:border-indigo-500 ${t.bgInput} ${t.border} ${t.textMain}`} />
            </div>
            <div>
              <label className={`block text-xs mb-2 flex items-center gap-2 ${t.textMuted}`}><Key className="w-3 h-3"/> AI API Key</label>
