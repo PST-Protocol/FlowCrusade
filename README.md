@@ -131,7 +131,7 @@ Instead of switching tasks:
 ```bash
 git clone https://github.com/Bingxi-Jiang/Flow-Crusade_frontend.git
 cd Flow-Crusade_frontend
-````
+```
 
 ### 2) Install
 
@@ -139,7 +139,16 @@ cd Flow-Crusade_frontend
 npm install
 ```
 
-### 3) Run (Dev)
+### 3) Run Server
+
+```bash
+npm run server
+```
+
+Vite will start a local backend server on port 8787
+
+
+### 3) Run Frontend
 
 ```bash
 npm run dev

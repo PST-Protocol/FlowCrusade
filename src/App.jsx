@@ -4,7 +4,7 @@ import {
   ChevronRight, Home, CheckCircle, Clock, RefreshCw, 
   X, Edit3, Trash2, Zap, Play, Pause, RotateCcw,
   Paperclip, ArrowLeft, Settings as SettingsIcon,
-  Moon, Sun, Bell, Database, Key, ShieldAlert,
+  Moon, Sun, Bell, Database, ShieldAlert,
   ChevronDown, ChevronUp, ChevronLeft, Users, MapPin, Trophy, Ticket,
   Menu, PanelLeftClose
 } from 'lucide-react';
@@ -173,6 +173,59 @@ function getRewardBounds(totalMins) {
 function clamp01(x) { return Math.max(0, Math.min(1, x)); }
 function formatMins(m) { const v = Math.max(0, Math.round(Number(m) || 0)); return `${v}m`; }
 
+function stripExtension(filename = '') {
+  return filename.replace(/\.[^.]+$/, '');
+}
+
+function fileToBase64(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const result = typeof reader.result === 'string' ? reader.result : '';
+      const base64 = result.includes(',') ? result.split(',')[1] : result;
+      resolve(base64);
+    };
+    reader.onerror = () => reject(new Error('Failed to read the uploaded file.'));
+    reader.readAsDataURL(file);
+  });
+}
+
+function findNodeById(list = [], id) {
+  for (const item of list) {
+    if (item.id === id) return item;
+    if (item.children?.length) {
+      const found = findNodeById(item.children, id);
+      if (found) return found;
+    }
+  }
+  return null;
+}
+
+function findPathToNode(list = [], id, path = []) {
+  for (const item of list) {
+    const nextPath = [...path, item.id];
+    if (item.id === id) return nextPath;
+    if (item.children?.length) {
+      const found = findPathToNode(item.children, id, nextPath);
+      if (found) return found;
+    }
+  }
+  return null;
+}
+
+function updateNodeById(list = [], id, updater) {
+  return list.map((item) => {
+    if (item.id === id) return updater(item);
+    if (item.children?.length) {
+      return {
+        ...item,
+        children: updateNodeById(item.children, id, updater),
+      };
+    }
+    return item;
+  });
+}
+
 
 // ==========================================
 // 3. MAIN APP COMPONENT
@@ -215,8 +268,7 @@ export default function FlowCrusadeApp() {
     theme: 'light',
     monitorEnabled: true,
     distractThreshold: 5,
-    storagePath: '/Users/local/flow-crusade/data',
-    apiKey: 'sk-mock-123456',
+    storagePath: 'Browser-managed uploads',
     notifications: true
   });
 
@@ -225,6 +277,9 @@ export default function FlowCrusadeApp() {
   const [isFocusedMode, setIsFocusedMode] = useState(false); // Collapses sidebars
   const [toast, setToast] = useState(null);
   const [isRewardsOpen, setIsRewardsOpen] = useState(false);
+  const [composerText, setComposerText] = useState('');
+  const [composerFile, setComposerFile] = useState(null);
+  const [isAiWorking, setIsAiWorking] = useState(false);
 
   // Sync settings theme to state
   useEffect(() => { setTheme(settings.theme); }, [settings.theme]);
@@ -252,31 +307,30 @@ export default function FlowCrusadeApp() {
   const openRewards = () => setIsRewardsOpen(true);
   const closeRewards = () => setIsRewardsOpen(false);
 
-  const requestAIBreakdown = async (taskTitle, taskDesc = '') => {
+  const postBreakdownRequest = async (payload) => {
     const response = await fetch('http://localhost:8787/api/breakdown', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        task: taskTitle,
-        context: taskDesc,
-      }),
+      body: JSON.stringify(payload),
     });
 
-    if (!response.ok) {
-      let err = {};
-      try {
-        err = await response.json();
-      } catch {
-        err = { error: 'AI breakdown failed' };
-      }
-      throw new Error(err.error || 'AI breakdown failed');
+    let data = {};
+    try {
+      data = await response.json();
+    } catch {
+      data = { error: 'AI request failed' };
     }
 
-    return response.json();
+    if (!response.ok) {
+      const suffix = data?.requestId ? ` (ref: ${data.requestId})` : '';
+      throw new Error((data.error || 'AI request failed') + suffix);
+    }
+
+    return data;
   };
 
   const convertAiStepsToChildren = (steps, parentId, source = 'ai') => {
-    return steps.map((step, index) => ({
+    return (steps || []).slice(0, 3).map((step, index) => ({
       id: `${parentId}-ai-${index + 1}`,
       title: step.title,
       progress: 0,
@@ -289,7 +343,19 @@ export default function FlowCrusadeApp() {
     }));
   };
 
-  const createNewTask = (title, date) => {
+  const convertAiStepToNode = (step, nodeId, source = 'ai', slotIndex = 0) => ({
+    id: nodeId,
+    title: step.title,
+    progress: 0,
+    status: step.status || 'pending',
+    desc: `${step.desc || ''}${step.estimatedMinutes ? ` (${step.estimatedMinutes} min)` : ''}`,
+    estimatedMinutes: step.estimatedMinutes || 10,
+    priority: step.priority || slotIndex + 1,
+    aiSource: source,
+    children: [],
+  });
+
+  const createNewTask = (title, date, extra = {}) => {
     const d = date || new Date().toISOString().split('T')[0];
     const newTask = {
       id: `task_${Date.now()}`,
@@ -298,9 +364,10 @@ export default function FlowCrusadeApp() {
       status: 'pending',
       date: d,
       desc: 'No description provided.',
-      children: []
+      children: [],
+      ...extra,
     };
-    setTasks([...tasks, newTask]);
+    setTasks((prev) => [...prev, newTask]);
     showToast('Task added successfully');
     return newTask;
   };
@@ -317,80 +384,317 @@ export default function FlowCrusadeApp() {
     ));
   };
 
-  const handleBreakdown = async (taskIdToBreakdown) => {
-    try {
-      const findTaskById = (list, id) => {
-        for (const item of list) {
-          if (item.id === id) return item;
-          if (item.children?.length) {
-            const found = findTaskById(item.children, id);
-            if (found) return found;
-          }
+  const buildRootContextPayload = (root) => ({
+    rootTitle: root?.title || '',
+    rootDescription: root?.desc || '',
+  });
+
+  const getTreeContext = (targetId) => {
+    const root = tasks.find((t) => t.id === activeTaskId) || tasks.find((t) => t.id === targetId);
+    if (!root) return null;
+
+    if (targetId === root.id) {
+      return {
+        root,
+        targetNode: root,
+        parentNode: null,
+        siblingNodes: root.children || [],
+        pathToTarget: [],
+      };
+    }
+
+    let found = null;
+
+    const walk = (list, parentNode, pathSoFar) => {
+      for (const node of list || []) {
+        if (node.id === targetId) {
+          found = {
+            root,
+            targetNode: node,
+            parentNode,
+            siblingNodes: list || [],
+            pathToTarget: [...pathSoFar, node.id],
+          };
+          return true;
         }
-        return null;
+        if (node.children?.length && walk(node.children, node, [...pathSoFar, node.id])) {
+          return true;
+        }
+      }
+      return false;
+    };
+
+    walk(root.children || [], root, []);
+    return found;
+  };
+
+  const ensureRootContext = async (root) => {
+    if (root?.sourceContext?.contextId) {
+      return {
+        sourceContext: root.sourceContext,
+        bootstrapResult: null,
+      };
+    }
+
+    const seedText = [root?.title, root?.desc].filter(Boolean).join('\n\n').trim();
+    const bootstrap = await postBreakdownRequest({
+      mode: 'initial',
+      taskInput: seedText,
+      file: null,
+    });
+
+    const sourceContext = {
+      contextId: bootstrap.contextId,
+      originalTaskInput: seedText,
+      fileName: null,
+      fileMimeType: null,
+      fileSize: null,
+      hasFile: false,
+    };
+
+    setTasks((prev) =>
+      prev.map((task) =>
+        task.id === root.id
+          ? {
+              ...task,
+              sourceContext,
+              children: task.children?.length
+                ? task.children
+                : convertAiStepsToChildren(bootstrap.steps || [], task.id, bootstrap.source || 'ai'),
+            }
+          : task
+      )
+    );
+
+    return { sourceContext, bootstrapResult: bootstrap };
+  };
+
+  const handleInitialSend = async (overrideText) => {
+    if (isAiWorking) return;
+
+    const taskInput = typeof overrideText === 'string' ? overrideText : composerText;
+    const trimmedInput = taskInput.trim();
+
+    if (!trimmedInput && !composerFile) {
+      showToast('Please enter a task or upload a file before sending.', 'warning');
+      return;
+    }
+
+    try {
+      setIsAiWorking(true);
+      showToast('Generating 3 subtasks...');
+
+      const filePayload = composerFile
+        ? {
+            name: composerFile.name,
+            mimeType: composerFile.type || 'application/octet-stream',
+            size: composerFile.size || 0,
+            dataBase64: await fileToBase64(composerFile),
+          }
+        : null;
+
+      const result = await postBreakdownRequest({
+        mode: 'initial',
+        taskInput: trimmedInput,
+        file: filePayload,
+      });
+
+      const newTaskId = `task_${Date.now()}`;
+      const newTask = {
+        id: newTaskId,
+        title: result.rootTitle || trimmedInput || stripExtension(composerFile?.name || 'Uploaded Task'),
+        progress: 0,
+        status: 'pending',
+        date: new Date().toISOString().split('T')[0],
+        desc: result.rootDescription || trimmedInput || 'No description provided.',
+        children: convertAiStepsToChildren(result.steps || [], newTaskId, result.source || 'ai'),
+        sourceContext: {
+          contextId: result.contextId,
+          originalTaskInput: trimmedInput,
+          fileName: composerFile?.name || null,
+          fileMimeType: composerFile?.type || null,
+          fileSize: composerFile?.size || null,
+          hasFile: !!composerFile,
+        },
       };
 
-      const root = tasks.find(t => t.id === activeTaskId) || tasks.find(t => t.id === taskIdToBreakdown);
-      if (!root) return;
+      setTasks((prev) => [newTask, ...prev]);
+      setActiveTaskId(newTaskId);
+      setPath([newTaskId]);
+      setIsFocusedMode(true);
+      setComposerText('');
+      setComposerFile(null);
+      showToast('Task broken into 3 subtasks');
+    } catch (error) {
+      console.error(error);
+      showToast(error.message || 'AI breakdown failed', 'warning');
+    } finally {
+      setIsAiWorking(false);
+    }
+  };
 
-      const targetNode = taskIdToBreakdown === root.id ? root : findTaskById(root.children || [], taskIdToBreakdown);
-      if (!targetNode) return;
+  const handleOpenNode = (targetId) => {
+    const ctx = getTreeContext(targetId);
+    if (!ctx) return;
 
-      showToast('Generating AI breakdown...');
+    if (targetId === ctx.root.id) {
+      setPath([ctx.root.id]);
+    } else {
+      setPath([ctx.root.id, ...ctx.pathToTarget]);
+    }
 
-      const result = await requestAIBreakdown(targetNode.title, targetNode.desc || '');
-      const aiChildren = convertAiStepsToChildren(result.steps || [], targetNode.id, result.source || 'ai');
+    setIsFocusedMode(true);
+  };
 
-      const updateNodeChildren = (list, id, newChildren) => {
-        return list.map(item => {
-          if (item.id === id) {
-            return {
-              ...item,
-              children: newChildren,
-            };
-          }
-          if (item.children?.length) {
-            return {
-              ...item,
-              children: updateNodeChildren(item.children, id, newChildren),
-            };
-          }
-          return item;
-        });
-      };
+  const handleBreakdown = async (taskIdToBreakdown) => {
+    if (isAiWorking) return;
 
-      setTasks(prev =>
-        prev.map(task => {
-          if (task.id !== root.id) return task;
-          if (targetNode.id === root.id) {
+    const ctx = getTreeContext(taskIdToBreakdown);
+    if (!ctx) return;
+
+    try {
+      setIsAiWorking(true);
+      showToast('Generating 3 child subtasks...');
+
+      const ensured = await ensureRootContext(ctx.root);
+      const contextId = ensured.sourceContext.contextId;
+
+      if (taskIdToBreakdown === ctx.root.id && ensured.bootstrapResult && !ctx.root.children?.length) {
+        const aiChildren = convertAiStepsToChildren(ensured.bootstrapResult.steps || [], ctx.root.id, ensured.bootstrapResult.source || 'ai');
+        setTasks((prev) =>
+          prev.map((task) =>
+            task.id === ctx.root.id
+              ? {
+                  ...task,
+                  children: aiChildren,
+                  sourceContext: ensured.sourceContext,
+                }
+              : task
+          )
+        );
+        setActiveTaskId(ctx.root.id);
+        setPath([ctx.root.id]);
+        setIsFocusedMode(true);
+        showToast('Task broken into 3 subtasks');
+        return;
+      }
+
+      const result = await postBreakdownRequest({
+        mode: 'breakdown-node',
+        contextId,
+        rootContext: buildRootContextPayload(ctx.root),
+        parentNode: ctx.parentNode
+          ? { id: ctx.parentNode.id, title: ctx.parentNode.title, desc: ctx.parentNode.desc || '' }
+          : { id: ctx.root.id, title: ctx.root.title, desc: ctx.root.desc || '' },
+        targetNode: {
+          id: ctx.targetNode.id,
+          title: ctx.targetNode.title,
+          desc: ctx.targetNode.desc || '',
+        },
+      });
+
+      const aiChildren = convertAiStepsToChildren(result.steps || [], ctx.targetNode.id, result.source || 'ai');
+
+      setTasks((prev) =>
+        prev.map((task) => {
+          if (task.id !== ctx.root.id) return task;
+
+          if (ctx.targetNode.id === ctx.root.id) {
             return {
               ...task,
               children: aiChildren,
+              sourceContext: ensured.sourceContext,
             };
           }
+
           return {
             ...task,
-            children: updateNodeChildren(task.children || [], targetNode.id, aiChildren),
+            sourceContext: ensured.sourceContext,
+            children: updateNodeById(task.children || [], ctx.targetNode.id, (node) => ({
+              ...node,
+              children: aiChildren,
+            })),
           };
         })
       );
 
-      if (targetNode.id === root.id) {
-        setPath([root.id]);
-      } else {
-        setPath(prev => [...prev, targetNode.id]);
-      }
-
+      setActiveTaskId(ctx.root.id);
+      setPath(taskIdToBreakdown === ctx.root.id ? [ctx.root.id] : [ctx.root.id, ...ctx.pathToTarget]);
       setIsFocusedMode(true);
-      showToast('AI breakdown generated');
+      showToast('Subtask broken into 3 child subtasks');
     } catch (error) {
       console.error(error);
-      showToast('AI breakdown failed', 'warning');
+      showToast(error.message || 'AI breakdown failed', 'warning');
+    } finally {
+      setIsAiWorking(false);
+    }
+  };
+
+  const handleRegenerate = async (taskIdToRegenerate) => {
+    if (isAiWorking) return;
+
+    const ctx = getTreeContext(taskIdToRegenerate);
+    if (!ctx) return;
+
+    if (taskIdToRegenerate === ctx.root.id) {
+      await handleBreakdown(taskIdToRegenerate);
+      return;
+    }
+
+    try {
+      setIsAiWorking(true);
+      showToast('Regenerating only this subtask...');
+
+      const ensured = await ensureRootContext(ctx.root);
+      const result = await postBreakdownRequest({
+        mode: 'regenerate-node',
+        contextId: ensured.sourceContext.contextId,
+        rootContext: buildRootContextPayload(ctx.root),
+        parentNode: ctx.parentNode
+          ? { id: ctx.parentNode.id, title: ctx.parentNode.title, desc: ctx.parentNode.desc || '' }
+          : { id: ctx.root.id, title: ctx.root.title, desc: ctx.root.desc || '' },
+        targetNode: {
+          id: ctx.targetNode.id,
+          title: ctx.targetNode.title,
+          desc: ctx.targetNode.desc || '',
+          estimatedMinutes: ctx.targetNode.estimatedMinutes || 10,
+        },
+        siblingNodes: (ctx.siblingNodes || []).map((node) => ({
+          id: node.id,
+          title: node.title,
+          desc: node.desc || '',
+        })),
+      });
+
+      const slotIndex = Math.max(0, (ctx.siblingNodes || []).findIndex((node) => node.id === ctx.targetNode.id));
+      const regeneratedNode = convertAiStepToNode(result.step, ctx.targetNode.id, result.source || 'ai', slotIndex);
+
+      setTasks((prev) =>
+        prev.map((task) => {
+          if (task.id !== ctx.root.id) return task;
+          return {
+            ...task,
+            sourceContext: ensured.sourceContext,
+            children: updateNodeById(task.children || [], ctx.targetNode.id, () => regeneratedNode),
+          };
+        })
+      );
+
+      showToast('Only that subtask was regenerated');
+    } catch (error) {
+      console.error(error);
+      showToast(error.message || 'Regeneration failed', 'warning');
+    } finally {
+      setIsAiWorking(false);
     }
   };
 
   const handleReturnToRoot = () => {
-    setPath([]);
+    if (activeTaskId) {
+      setPath([activeTaskId]);
+    } else {
+      setPath([]);
+    }
     setIsFocusedMode(false);
   };
 
@@ -450,7 +754,7 @@ export default function FlowCrusadeApp() {
         {/* Logo + 折叠按钮 */}
         <div className={`flex items-center mb-8 px-3 w-full ${navCollapsed || isFocusedMode ? 'justify-center' : 'justify-between'}`}>
           <div className={`flex items-center gap-2 ${t.textMain}`}>
-            <img src="/logo.png" alt="FlowCrusade" className="w-8 h-8 shrink-0 object-contain" />
+            <img src="/logo.svg" alt="FlowCrusade" className="w-8 h-8 shrink-0 object-contain" />
             {!navCollapsed && !isFocusedMode && navWidth > 130 && <span className="text-base font-bold tracking-tight whitespace-nowrap">FlowCrusade</span>}
           </div>
           {!isFocusedMode && !navCollapsed && navWidth > 130 && (
@@ -586,15 +890,30 @@ export default function FlowCrusadeApp() {
           
           {/* STATE A: No Pending Task */}
           {!activeTaskId && (
-            <ViewA t={t} theme={theme} onSubmit={(val) => {
-              const newTask = createNewTask(val);
-              setActiveTaskId(newTask.id);
-            }} showToast={showToast} />
+            <ViewA
+              t={t}
+              theme={theme}
+              value={composerText}
+              onValueChange={setComposerText}
+              file={composerFile}
+              onFileSelect={setComposerFile}
+              onFileClear={() => setComposerFile(null)}
+              onSubmit={handleInitialSend}
+              isSubmitting={isAiWorking}
+            />
           )}
 
           {/* STATE B: Active Task Overview */}
           {activeTaskId && path.length === 0 && (
-            <ViewB t={t} theme={theme} task={activeRootTask} onBreakdown={() => handleBreakdown(activeRootTask.id)} tasks={tasks} onSwitchTask={(id) => {setActiveTaskId(id); setPath([])}} showToast={showToast} />
+            <ViewB
+              t={t}
+              theme={theme}
+              task={activeRootTask}
+              onBreakdown={() => handleBreakdown(activeRootTask.id)}
+              tasks={tasks}
+              onSwitchTask={(id) => { setActiveTaskId(id); setPath([]); }}
+              isWorking={isAiWorking}
+            />
           )}
 
           {/* STATE C & E: Breakdown & Focus Views */}
@@ -604,6 +923,8 @@ export default function FlowCrusadeApp() {
               rootTask={activeRootTask} 
               path={path}
               onBreakdown={handleBreakdown}
+              onRegenerate={handleRegenerate}
+              onOpenNode={handleOpenNode}
               showToast={showToast}
             />
           )}
@@ -712,25 +1033,36 @@ export default function FlowCrusadeApp() {
 // ==========================================
 
 // STATE A: No Task
-function ViewA({ t, theme, onSubmit, showToast }) {
+function ViewA({ t, theme, value, onValueChange, file, onFileSelect, onFileClear, onSubmit, isSubmitting }) {
   return (
     <div className="flex-1 flex flex-col items-center justify-center max-w-3xl mx-auto w-full animate-fade-in">
       <div className="text-center mb-12">
         <div className={`w-16 h-16 rounded-2xl mx-auto mb-6 flex items-center justify-center border ${theme === 'dark' ? 'bg-[#1c202a] border-white/10 shadow-[0_0_30px_rgba(99,102,241,0.1)]' : 'bg-white border-slate-200 shadow-xl shadow-indigo-100'}`}>
-           <img src="/logo.png" alt="FlowCrusade" className="w-10 h-10 object-contain" />
+           <img src="/logo.svg" alt="FlowCrusade" className="w-10 h-10 object-contain" />
         </div>
         <h1 className={`text-3xl md:text-4xl font-bold tracking-tight mb-4 ${t.textMain}`}>What are we crushing today?</h1>
-        <p className={`text-lg ${t.textMuted}`}>Enter a task, drop an assignment, and let's break it down.</p>
+        <p className={`text-lg ${t.textMuted}`}>Type a task, upload a file, or do both. Empty input is blocked unless a file is attached.</p>
       </div>
 
       <div className="w-full mt-4">
-        <ChatInput t={t} theme={theme} onSubmit={onSubmit} onUploadClick={() => showToast('Mock Upload Triggered')} placeholder="e.g. Write a 5-page history essay by Friday..." />
+        <ChatInput
+          t={t}
+          theme={theme}
+          value={value}
+          onChange={onValueChange}
+          file={file}
+          onFileSelect={onFileSelect}
+          onFileClear={onFileClear}
+          onSubmit={onSubmit}
+          isSubmitting={isSubmitting}
+          placeholder="e.g. Write a 5-page history essay by Friday..."
+        />
       </div>
 
       <div className="flex flex-wrap justify-center gap-3 mt-10">
-         <SuggestionBadge t={t} text="Study for Math Midterm" onClick={() => onSubmit("Study for Math Midterm")} />
-         <SuggestionBadge t={t} text="Clean my room" onClick={() => onSubmit("Clean my room")} />
-         <SuggestionBadge t={t} text="Read 2 chapters" onClick={() => onSubmit("Read 2 chapters")} />
+         <SuggestionBadge t={t} text="Study for Math Midterm" onClick={() => onSubmit('Study for Math Midterm')} />
+         <SuggestionBadge t={t} text="Clean my room" onClick={() => onSubmit('Clean my room')} />
+         <SuggestionBadge t={t} text="Read 2 chapters" onClick={() => onSubmit('Read 2 chapters')} />
       </div>
     </div>
   );
@@ -745,16 +1077,15 @@ function SuggestionBadge({ t, text, onClick }) {
 }
 
 // STATE B: Active Task Overview
-function ViewB({ t, theme, task, tasks, onBreakdown, onSwitchTask, showToast }) {
+function ViewB({ t, theme, task, tasks, onBreakdown, onSwitchTask, isWorking }) {
   if (!task) return null;
   const [showSwitch, setShowSwitch] = useState(false);
 
   return (
     <div className="flex-1 flex flex-col max-w-4xl mx-auto w-full animate-fade-in pb-20">
-      
       <div className="mt-6 mb-8 flex items-center justify-between">
          <span className={`inline-block px-3 py-1 bg-indigo-500/10 text-indigo-400 rounded-md text-xs font-bold tracking-wider uppercase border border-indigo-500/20`}>Active Mission</span>
-         
+
          <div className="relative">
             <button onClick={() => setShowSwitch(!showSwitch)} className={`text-sm px-4 py-2 rounded-xl border flex items-center gap-2 transition-colors ${t.bgCard} ${t.border} ${t.textMain} hover:border-indigo-500/50`}>
               Switch Task <ChevronDown className="w-4 h-4" />
@@ -762,7 +1093,7 @@ function ViewB({ t, theme, task, tasks, onBreakdown, onSwitchTask, showToast }) 
             {showSwitch && (
               <div className={`absolute right-0 top-full mt-2 w-64 rounded-xl border shadow-2xl z-20 py-2 animate-slide-up ${t.bgPanel} ${t.border}`}>
                 {tasks.map(tk => (
-                  <button key={tk.id} onClick={() => {onSwitchTask(tk.id); setShowSwitch(false);}} className={`w-full text-left px-4 py-3 text-sm hover:bg-indigo-500/10 hover:text-indigo-400 transition-colors ${tk.id === task.id ? 'text-indigo-500 font-bold bg-indigo-500/5' : t.textMuted}`}>
+                  <button key={tk.id} onClick={() => { onSwitchTask(tk.id); setShowSwitch(false); }} className={`w-full text-left px-4 py-3 text-sm hover:bg-indigo-500/10 hover:text-indigo-400 transition-colors ${tk.id === task.id ? 'text-indigo-500 font-bold bg-indigo-500/5' : t.textMuted}`}>
                     {tk.title}
                   </button>
                 ))}
@@ -772,14 +1103,25 @@ function ViewB({ t, theme, task, tasks, onBreakdown, onSwitchTask, showToast }) 
       </div>
 
       <div className={`rounded-3xl p-8 md:p-12 shadow-2xl border relative overflow-hidden group ${t.bgCard} ${t.border}`}>
-        {/* Decorative background glow in dark mode */}
         {theme === 'dark' && <div className="absolute -right-32 -top-32 w-96 h-96 bg-indigo-500/10 rounded-full blur-[100px] pointer-events-none" />}
 
         <div className="relative z-10">
           <h2 className={`text-3xl md:text-4xl font-bold mb-4 leading-tight ${t.textMain}`}>{task.title}</h2>
-          
           <CollapsibleText t={t} text={task.desc} />
-          
+
+          <div className="mt-6 flex flex-wrap gap-3">
+            {task?.sourceContext?.fileName && (
+              <span className="px-3 py-1.5 rounded-full text-xs font-semibold bg-indigo-500/10 text-indigo-500 border border-indigo-500/20">
+                File: {task.sourceContext.fileName}
+              </span>
+            )}
+            {task?.sourceContext?.originalTaskInput && (
+              <span className={`px-3 py-1.5 rounded-full text-xs font-semibold border ${theme === 'dark' ? 'bg-white/5 border-white/10 text-gray-300' : 'bg-slate-50 border-slate-200 text-slate-600'}`}>
+                Prompt saved for later regenerate / deeper breakdown
+              </span>
+            )}
+          </div>
+
           <div className="mt-10 mb-10">
             <div className={`flex justify-between text-sm font-semibold mb-3 ${t.textMuted}`}>
               <span>Overall Progress</span>
@@ -793,29 +1135,25 @@ function ViewB({ t, theme, task, tasks, onBreakdown, onSwitchTask, showToast }) 
           </div>
 
           <div className="flex items-center gap-4">
-            <button 
+            <button
               onClick={onBreakdown}
-              className={`group relative inline-flex items-center justify-center gap-3 px-8 py-4 bg-indigo-600 text-white font-bold rounded-xl overflow-hidden hover:bg-indigo-500 transition-all active:scale-95 shadow-[0_0_20px_rgba(99,102,241,0.3)]`}
+              disabled={isWorking}
+              className={`group relative inline-flex items-center justify-center gap-3 px-8 py-4 bg-indigo-600 text-white font-bold rounded-xl overflow-hidden transition-all active:scale-95 shadow-[0_0_20px_rgba(99,102,241,0.3)] ${isWorking ? 'opacity-60 cursor-not-allowed' : 'hover:bg-indigo-500'}`}
             >
               <Zap className="w-5 h-5 relative z-10 fill-white/20" />
-              <span className="relative z-10">Breakdown Task</span>
+              <span className="relative z-10">{isWorking ? 'Working...' : 'Breakdown Task'}</span>
             </button>
           </div>
         </div>
-      </div>
-
-      <div className="mt-12 w-full max-w-3xl mx-auto">
-        <ChatInput t={t} theme={theme} onSubmit={() => showToast("Context added to task")} onUploadClick={() => showToast('Mock Upload')} placeholder="Add more context to this task before breaking it down..." />
       </div>
     </div>
   );
 }
 
 // STATE C & E: Breakdown List / Detail Handlers
-function ViewCE({ t, theme, rootTask, path, onBreakdown, showToast }) {
-  const [focusingSubtask, setFocusingSubtask] = useState(null); // Local state for State D
+function ViewCE({ t, theme, rootTask, path, onBreakdown, onRegenerate, onOpenNode, showToast }) {
+  const [focusingSubtask, setFocusingSubtask] = useState(null);
 
-  // Resolve current context based on path
   let currentContext = rootTask;
   let contextList = rootTask.children || [];
 
@@ -830,30 +1168,36 @@ function ViewCE({ t, theme, rootTask, path, onBreakdown, showToast }) {
     }
   }
 
-  // STATE D: Specific Focus View
   if (focusingSubtask) {
     const activeSubtask = contextList.find(n => n.id === focusingSubtask) || currentContext;
-    return <FocusDetailView t={t} theme={theme} task={activeSubtask} onBack={() => setFocusingSubtask(null)} onComplete={() => {showToast("Subtask Completed!", 'success'); setFocusingSubtask(null);}} onFurtherBreakdown={() => { setFocusingSubtask(null); onBreakdown(activeSubtask.id); }} onRegenerate={() => { setFocusingSubtask(null); onBreakdown(activeSubtask.id); }} />
+    return (
+      <FocusDetailView
+        t={t}
+        theme={theme}
+        task={activeSubtask}
+        onBack={() => setFocusingSubtask(null)}
+        onComplete={() => { showToast('Subtask Completed!', 'success'); setFocusingSubtask(null); }}
+        onFurtherBreakdown={() => { setFocusingSubtask(null); onBreakdown(activeSubtask.id); }}
+        onRegenerate={() => { setFocusingSubtask(null); onRegenerate(activeSubtask.id); }}
+      />
+    );
   }
 
-  // STATE C / E: List View
   return (
     <div className="flex-1 max-w-4xl mx-auto w-full animate-fade-in pb-10">
-      
       <div className={`mb-8 mt-2 flex justify-between items-end border-b pb-6 ${t.border}`}>
         <div>
           <h2 className={`text-2xl font-bold mb-2 ${t.textMain}`}>{currentContext.title}</h2>
-          <p className={`text-sm ${t.textMuted}`}>Select a step to focus on, or break it down further.</p>
+          <p className={`text-sm ${t.textMuted}`}>Select a step to focus on, regenerate just one step, or break one step into 3 smaller steps.</p>
         </div>
-        <button onClick={() => onBreakdown(currentContext.id)} className={`px-4 py-2 rounded-xl text-sm font-semibold flex items-center gap-2 transition-colors ${t.secondaryBtn}`}>
+        <button onClick={() => onRegenerate(currentContext.id)} className={`px-4 py-2 rounded-xl text-sm font-semibold flex items-center gap-2 transition-colors ${t.secondaryBtn}`}>
           <RefreshCw className="w-4 h-4" /> Regenerate
         </button>
       </div>
 
       <div className="space-y-4">
         {contextList.map((sub, index) => (
-          <div key={sub.id} className={`rounded-2xl p-5 border shadow-sm hover:shadow-md transition-all group flex flex-col md:flex-row md:items-start justify-between gap-6 animate-slide-up ${t.bgCard} ${t.border} hover:${t.borderFocus}`} style={{animationDelay: `${index * 0.05}s`}}>
-            
+          <div key={sub.id} className={`rounded-2xl p-5 border shadow-sm hover:shadow-md transition-all group flex flex-col md:flex-row md:items-start justify-between gap-6 animate-slide-up ${t.bgCard} ${t.border} hover:${t.borderFocus}`} style={{ animationDelay: `${index * 0.05}s` }}>
             <div className="flex items-start gap-4 flex-1 pt-1">
               <div className="w-8 h-8 rounded-full bg-indigo-500/10 text-indigo-400 flex items-center justify-center font-bold text-sm shrink-0 mt-1 border border-indigo-500/20">
                 {index + 1}
@@ -876,35 +1220,39 @@ function ViewCE({ t, theme, rootTask, path, onBreakdown, showToast }) {
                   )}
                 </div>
                 <div className="mt-2">
-                   <CollapsibleText t={t} text={sub.desc} defaultExpanded={false} />
+                  <CollapsibleText t={t} text={sub.desc} defaultExpanded={false} />
                 </div>
-                
+
                 {sub.children && sub.children.length > 0 && (
-                  <div className={`flex items-center gap-2 mt-4 text-xs font-semibold px-3 py-1.5 rounded-md w-fit ${theme === 'dark' ? 'bg-white/5' : 'bg-slate-100'} ${t.textMuted}`}>
-                     <ChevronRight className="w-3 h-3" />
-                     {sub.children.length} deeper sub-steps available
-                  </div>
+                  <button
+                    type="button"
+                    onClick={() => onOpenNode(sub.id)}
+                    className={`flex items-center gap-2 mt-4 text-xs font-semibold px-3 py-1.5 rounded-md w-fit transition-colors ${theme === 'dark' ? 'bg-white/5 hover:bg-white/10' : 'bg-slate-100 hover:bg-slate-200'} ${t.textMuted}`}
+                  >
+                    <ChevronRight className="w-3 h-3" />
+                    Open {sub.children.length} deeper sub-steps
+                  </button>
                 )}
               </div>
             </div>
 
             <div className="flex items-center gap-2 self-end md:self-center bg-transparent p-1 rounded-xl">
-              <button 
-                onClick={() => onBreakdown(sub.id)}
+              <button
+                onClick={() => onRegenerate(sub.id)}
                 className={`p-2.5 rounded-lg transition-colors tooltip-trigger ${t.textMuted} hover:text-indigo-400 hover:bg-indigo-500/10`}
-                title="Regenerate / Modify"
+                title="Regenerate only this subtask"
               >
                 <RefreshCw className="w-4 h-4" />
               </button>
-              
-              <button 
-                onClick={() => onBreakdown(sub.id)}
+
+              <button
+                onClick={() => (sub.children && sub.children.length > 0 ? onOpenNode(sub.id) : onBreakdown(sub.id))}
                 className={`px-4 py-2 text-sm font-bold rounded-lg transition-colors whitespace-nowrap ${t.secondaryBtn}`}
               >
-                Breakdown
+                {sub.children && sub.children.length > 0 ? 'Open' : 'Breakdown'}
               </button>
 
-              <button 
+              <button
                 onClick={() => setFocusingSubtask(sub.id)}
                 className={`px-5 py-2 text-sm font-bold rounded-lg transition-all whitespace-nowrap flex items-center gap-2 ${t.primaryBtn}`}
               >
@@ -1093,39 +1441,71 @@ function NavItem({ t, icon, label, active, isFocusedMode, onClick, showLabel = t
   );
 }
 
-function ChatInput({ t, theme, onSubmit, onUploadClick, placeholder }) {
-  const [val, setVal] = useState('');
+function ChatInput({ t, theme, value, onChange, file, onFileSelect, onFileClear, onSubmit, placeholder, isSubmitting = false }) {
+  const fileInputRef = useRef(null);
+  const canSend = !!value.trim() || !!file;
   const disabledSendCls = theme === 'dark'
     ? 'bg-white/5 text-gray-500'
     : 'bg-slate-200 text-slate-400';
-  
+
   return (
-    <div className={`relative flex items-center border shadow-xl rounded-full p-2 focus-within:ring-2 focus-within:border-indigo-500 transition-all w-full max-w-3xl mx-auto ${t.bgInput} ${t.border}`}>
-      <button onClick={onUploadClick} className={`p-3 rounded-full transition-colors shrink-0 ${t.textMuted} hover:bg-indigo-500/10 hover:text-indigo-400`} title="Upload File">
-        <Paperclip className="w-5 h-5" />
-      </button>
-      
-      <input 
-        type="text" 
-        value={val}
-        onChange={(e) => setVal(e.target.value)}
-        onKeyDown={(e) => { if(e.key === 'Enter' && val.trim()) { onSubmit(val); setVal(''); } }}
-        placeholder={placeholder}
-        className={`flex-1 bg-transparent px-3 py-2 focus:outline-none text-base ${t.textMain}`}
-      />
-      
-      <div className="flex items-center gap-1 shrink-0 pr-1">
-        <button className={`p-3 rounded-full transition-colors hidden sm:block ${t.textMuted} hover:bg-indigo-500/10 hover:text-indigo-400`}>
-          <Mic className="w-5 h-5" />
+    <div className="w-full max-w-3xl mx-auto">
+      <div className={`relative flex items-center border shadow-xl rounded-full p-2 focus-within:ring-2 focus-within:border-indigo-500 transition-all w-full ${t.bgInput} ${t.border}`}>
+        <input
+          ref={fileInputRef}
+          type="file"
+          accept=".pdf,.doc,.docx,.txt,.md,.rtf,image/*"
+          className="hidden"
+          onChange={(e) => {
+            const selected = e.target.files?.[0];
+            if (selected) onFileSelect(selected);
+            e.target.value = '';
+          }}
+        />
+
+        <button onClick={() => fileInputRef.current?.click()} className={`p-3 rounded-full transition-colors shrink-0 ${t.textMuted} hover:bg-indigo-500/10 hover:text-indigo-400`} title="Upload File">
+          <Paperclip className="w-5 h-5" />
         </button>
-        <button 
-          onClick={() => { if(val.trim()) { onSubmit(val); setVal(''); } }}
-          disabled={!val.trim()}
-          className={`p-3 rounded-full transition-all flex items-center justify-center ${val.trim() ? 'bg-indigo-600 text-white shadow-md hover:bg-indigo-500 active:scale-95' : disabledSendCls}`}
-        >
-          <Send className={`w-5 h-5 ${val.trim() ? 'translate-x-0.5 -translate-y-0.5' : ''}`} />
-        </button>
+
+        <input
+          type="text"
+          value={value}
+          onChange={(e) => onChange(e.target.value)}
+          onKeyDown={(e) => { if (e.key === 'Enter' && canSend && !isSubmitting) onSubmit(); }}
+          placeholder={placeholder}
+          className={`flex-1 bg-transparent px-3 py-2 focus:outline-none text-base ${t.textMain}`}
+        />
+
+        <div className="flex items-center gap-1 shrink-0 pr-1">
+          <button className={`p-3 rounded-full transition-colors hidden sm:block ${t.textMuted} hover:bg-indigo-500/10 hover:text-indigo-400`} type="button">
+            <Mic className="w-5 h-5" />
+          </button>
+          <button
+            onClick={() => canSend && !isSubmitting && onSubmit()}
+            disabled={!canSend || isSubmitting}
+            className={`p-3 rounded-full transition-all flex items-center justify-center ${canSend && !isSubmitting ? 'bg-indigo-600 text-white shadow-md hover:bg-indigo-500 active:scale-95' : disabledSendCls}`}
+          >
+            <Send className={`w-5 h-5 ${canSend && !isSubmitting ? 'translate-x-0.5 -translate-y-0.5' : ''}`} />
+          </button>
+        </div>
       </div>
+
+      {file && (
+        <div className={`mt-3 flex items-center justify-between gap-3 rounded-2xl border px-4 py-3 ${theme === 'dark' ? 'bg-white/5 border-white/10' : 'bg-white border-slate-200'}`}>
+          <div className="min-w-0">
+            <div className={`text-sm font-semibold truncate ${t.textMain}`}>{file.name}</div>
+            <div className={`text-xs ${t.textMuted}`}>{file.type || 'Unknown type'} · {Math.max(1, Math.round((file.size || 0) / 1024))} KB</div>
+          </div>
+          <button
+            type="button"
+            onClick={onFileClear}
+            className={`p-2 rounded-xl transition-colors ${t.textMuted} hover:bg-indigo-500/10 hover:text-indigo-500`}
+            title="Remove file"
+          >
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+      )}
     </div>
   );
 }
@@ -2195,12 +2575,9 @@ function SettingsPanel({ t, settings, setSettings, showToast }) {
         <h4 className={`font-bold text-xs uppercase tracking-wider mb-3 mt-8 ${t.textMuted}`}>Developer & Data</h4>
         <div className="space-y-4">
            <div>
-             <label className={`block text-xs mb-2 flex items-center gap-2 ${t.textMuted}`}><Database className="w-3 h-3"/> Local Storage Path</label>
+             <label className={`block text-xs mb-2 flex items-center gap-2 ${t.textMuted}`}><Database className="w-3 h-3"/> Upload Handling</label>
              <input type="text" value={settings.storagePath} onChange={(e) => handleChange('storagePath', e.target.value)} className={`w-full px-3 py-2 rounded-lg border text-xs focus:outline-none focus:border-indigo-500 ${t.bgInput} ${t.border} ${t.textMain}`} />
-           </div>
-           <div>
-             <label className={`block text-xs mb-2 flex items-center gap-2 ${t.textMuted}`}><Key className="w-3 h-3"/> AI API Key</label>
-             <input type="password" value={settings.apiKey} onChange={(e) => handleChange('apiKey', e.target.value)} className={`w-full px-3 py-2 rounded-lg border text-xs focus:outline-none focus:border-indigo-500 ${t.bgInput} ${t.border} ${t.textMain}`} />
+             <p className={`mt-2 text-[11px] ${t.textMuted}`}>Files are selected through the browser and sent to the backend in-memory. Gemini credentials are read only from server environment variables.</p>
            </div>
         </div>
       </div>
