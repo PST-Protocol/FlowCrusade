@@ -1,221 +1,147 @@
-# Flow Crusade (Frontend Demo)
+# FlowCrusade
 
-### ADHD-friendly focus system designed to reduce initiation friction and sustain deep work
+FlowCrusade is a React/Vite productivity app that turns a high-level task into smaller focus steps, tracks focus/distraction activity, and keeps quick notes beside the working canvas.
 
-<p align="center">
-  <img src="public/screenshots/home.png" width="800" alt="Flow Crusade Banner"/>
-</p>
+## What this app does
 
-<p align="center">
-  <b>Break tasks → Enter flow → Track progress → Reinforce focus loops</b>
-</p>
+- Creates tasks manually or from an AI breakdown request.
+- Displays task trees with root tasks, subtasks, and deeper child steps.
+- Supports task drill-down and focused subtask views.
+- Tracks focus minutes, reward milestones, distraction events, and quick notes.
+- Stores local demo state in `localStorage` so refreshes preserve tasks, notes, and monitor events.
+- Uses a local Express API endpoint for AI task breakdowns.
 
-<p align="center">
-  <img src="https://img.shields.io/badge/React-18-blue"/>
-  <img src="https://img.shields.io/badge/Vite-fast-purple"/>
-  <img src="https://img.shields.io/badge/Tailwind-modern-38BDF8"/>
-  <img src="https://img.shields.io/badge/status-demo-orange"/>
-</p>
+## Project structure
 
----
-
-# 🧠 Concept
-
-
-
-**Flow Crusade** is a productivity interface designed specifically for ADHD-like cognitive workflows, where the hardest step is often simply starting.
-
-Instead of overwhelming users with large goals, it:
-
-* converts tasks into small executable steps
-* lowers activation energy for focus
-* provides immediate feedback and reinforcement
-* visualizes progress to sustain momentum
-
-This transforms:
-
-> “I can’t start.”
-> → into
-> “I can do this one step now.”
-
----
-
-# ✨ Core Features
-
-## 🪜 Recursive Task Breakdown
-
-<p align="center">
-<img src="public/screenshots/breakdown.png" width="700"/>
-</p>
-
-**Convert overwhelming goals into executable units**
-
-Capabilities:
-
-• infinite task → subtask → sub-subtask hierarchy
-• breadcrumb navigation
-• drill-down execution model
-
-Mental effect:
-
-> reduces cognitive load and decision paralysis
-
----
-
-## ⏱ Focus Mode
-
-<p align="center">
-<img src="public/screenshots/focus.png" width="700"/>
-</p>
-
-Enter a dedicated execution state.
-
-Features:
-
-• start / pause / resume sessions
-• visual timer feedback
-• single-task isolation
-
-Designed to minimize:
-
-• context switching
-• avoidance loops
-
----
-## 📊 Feedback & Reinforcement System
-
-<table align="center">
-<tr>
-<td align="center">
-<img src="public/screenshots/stats.png" width="260"><br>
-<b>Statistics</b><br>
-Behavior metrics & trends
-</td>
-<td align="center">
-<img src="public/screenshots/rewards.png" width="260"><br>
-<b>Rewards</b><br>
-Gamified reinforcement
-</td>
-<td align="center">
-<img src="public/screenshots/monitor.png" width="260"><br>
-<b>Monitor</b><br>
-Distraction tracking
-</td>
-
-</tr>
-</table>
-
----
-
-## 📝 Quick Notes Capture
-
-Prevents derailment from intrusive thoughts.
-
-Instead of switching tasks:
-
-→ capture instantly
-→ continue focus
-
----
-## 🧱 Tech Stack
-
-- **React** + **Vite** (fast dev server + modern build)
-- **Tailwind CSS** for styling
-- **lucide-react** icons (UI icon set used throughout)
-
----
-
-## 🚀 Local Development
-
-### 1) Clone
-```bash
-git clone https://github.com/Bingxi-Jiang/Flow-Crusade_frontend.git
-cd Flow-Crusade_frontend
+```txt
+.
+├── server/
+│   └── index.js                  # Local backend API for AI task breakdown requests
+├── src/
+│   ├── App.jsx                   # App-level orchestration, state, handlers, and layout wiring
+│   ├── main.jsx                  # React entry point
+│   ├── index.css                 # Tailwind/global CSS
+│   ├── data/
+│   │   ├── initialData.js        # Demo tasks, stats, events, and notes
+│   │   ├── rewards.js            # Reward/level math helpers and milestone config
+│   │   └── themes.js             # Light/dark theme token map
+│   ├── services/
+│   │   └── breakdownApi.js       # Fetch wrapper for `/api/breakdown`
+│   ├── utils/
+│   │   ├── file.js               # File/base64 helpers
+│   │   ├── storage.js            # localStorage loaders
+│   │   └── taskTree.js           # Tree search/update helpers
+│   ├── components/
+│   │   ├── common/               # Small reusable UI pieces
+│   │   ├── views/                # Main task workflow screens
+│   │   └── panels/               # Calendar/stats/monitor/settings/notes panels
+│   └── styles/
+│       └── runtimeAnimations.js  # Runtime animation and scrollbar style injection
+└── package.json
 ```
 
-### 2) Install
+## Component map
+
+### Main views
+
+- `ViewA.jsx` — empty/home state where the user enters a task or uploads a file.
+- `ViewB.jsx` — active root task overview before drilling into subtasks.
+- `ViewCE.jsx` — task breakdown tree and subtask drill-down experience.
+- `FocusDetailView.jsx` — focused view for a selected leaf-level subtask.
+
+### Panels
+
+- `LeftPanels.jsx` — chooses which left overlay panel is visible.
+- `CalendarPanel.jsx` — task calendar and manual task creation.
+- `StatsPanel.jsx` — focus score, rewards, leaderboard, and analytics.
+- `MonitorPanel.jsx` — distraction/focus event timeline.
+- `SettingsPanel.jsx` — theme and monitor settings.
+- `QuickNotesPanel.jsx` — local quick notes.
+
+### Common components
+
+- `ChatInput.jsx` — shared text/file input box.
+- `CollapsibleText.jsx` — expandable description text.
+- `NavItem.jsx` — sidebar navigation item.
+- `ProgressRing.jsx` — circular reward progress display.
+- `RewardProgressModal.jsx` — reward milestone modal.
+
+## Run locally
 
 ```bash
 npm install
+npm run dev
 ```
 
-### 3) Run Server
+Open the Vite URL printed in the terminal, usually `http://localhost:5173`.
+
+## Run the backend API
+
+In a separate terminal:
 
 ```bash
 npm run server
 ```
 
-Vite will start a local backend server on port 8787
+The frontend expects the task breakdown API at:
 
+```txt
+http://localhost:8787/api/breakdown
+```
 
-### 3) Run Frontend
+If the backend or API key is unavailable, the frontend will still load, but AI breakdown requests may fail.
+
+## Environment variables
+
+Copy the example file:
 
 ```bash
-npm run dev
+cp .env.example .env
 ```
 
-Vite will start a local dev server (commonly):
+Then fill in the provider API keys required by `server/index.js`.
 
-* [http://localhost:5173](http://localhost:5173)
+## Suggested testing strategy
 
----
+This refactor separates testable logic from UI files. Good first test targets:
 
-## 📦 Production Build
+1. `src/utils/taskTree.js`
+   - `findNodeById`
+   - `findPathToNode`
+   - `updateNodeById`
+
+2. `src/data/rewards.js`
+   - `getLevelForMinutes`
+   - `getRewardBounds`
+   - `clamp01`
+   - `formatMins`
+
+3. `src/utils/storage.js`
+   - localStorage fallback behavior
+   - corrupted JSON fallback behavior
+
+4. `src/services/breakdownApi.js`
+   - successful response parsing
+   - failed response error formatting
+
+A future test setup can use Vitest + React Testing Library:
 
 ```bash
-npm run build
-npm run preview
+npm install -D vitest @testing-library/react @testing-library/jest-dom jsdom
 ```
 
-* Build output: `dist/`
+Then add scripts like:
 
----
-
-## 🗂️ Project Structure (high-level)
-
-```text
-Flow-Crusade_frontend/
-├─ public/                 # static assets (put screenshots here)
-├─ src/
-│  ├─ App.jsx              # main demo app (UI + demo logic)
-│  ├─ main.jsx             # react entry
-│  └─ index.css            # tailwind entry
-├─ index.html
-├─ package.json
-├─ vite.config.js
-├─ tailwind.config.js
-└─ postcss.config.js
+```json
+{
+  "scripts": {
+    "test": "vitest",
+    "test:ui": "vitest --ui"
+  }
+}
 ```
 
----
+## Refactor notes
 
-## 🧪 Notes (This is a Demo)
-
-* Current data (tasks, stats, events, notes) is demo/mock-driven to showcase UX.
-* “Monitor” and “Rewards” are implemented as product-like flows, but they’re **not yet connected to a real backend** in this frontend repo.
-
----
-
-## 🛣️ Roadmap (Suggested)
-
-* [ ] Real persistence (LocalStorage / IndexedDB)
-* [ ] Integrate with backend (task generation + monitoring signals)
-* [ ] Export stats + streaks
-
-
----
-
-## 🤝 Contributing
-
-PRs are welcome — especially for:
-
-* UI polish (animations, micro-interactions)
-* Better breakdown UX (keyboard-first, quick refine)
-* Accessibility & mobile ergonomics
-
----
-
-## 📄 License
-
-Educational / personal demo use.
+The original `App.jsx` mixed mock data, theme config, utility functions, API calls, global state, and many UI components in a single 2600+ line file. The current structure separates those responsibilities so both humans and AI assistants can quickly locate the correct area to modify.
 

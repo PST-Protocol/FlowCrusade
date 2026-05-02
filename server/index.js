@@ -4,25 +4,27 @@ import dotenv from "dotenv";
 import crypto from "node:crypto";
 import fs from "node:fs";
 import fsp from "node:fs/promises";
-import path from "node:path";
 import os from "node:os";
-import { fileURLToPath } from "node:url";
+import path from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
+import { fileURLToPath } from "node:url";
+import mammoth from "mammoth";
+import XLSX from "xlsx";
+import JSZip from "jszip";
 
 dotenv.config();
 
 const app = express();
 const PORT = process.env.PORT || 8787;
 const contextStore = new Map();
+const CONTEXT_TTL_MS = 1000 * 60 * 60 * 6;
 const execFileAsync = promisify(execFile);
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
-const PROJECT_ROOT = path.resolve(__dirname, "..");
 const LOG_DIR = path.join(__dirname, "logs");
 const TEMP_ROOT_DIR = path.join(os.tmpdir(), "flow-crusade-gemini");
-const CONTEXT_TTL_MS = 1000 * 60 * 60 * 6;
 
 const SUPPORTED_TEXT_MIME_TYPES = new Set([
   "text/plain",
@@ -32,11 +34,33 @@ const SUPPORTED_TEXT_MIME_TYPES = new Set([
   "text/xml",
   "application/json",
   "application/xml",
+  "application/yaml",
+  "text/yaml",
+]);
+
+const DIRECT_GEMINI_MIME_TYPES = new Set([
+  "application/pdf",
+  "image/png",
+  "image/jpeg",
+  "image/jpg",
+  "image/webp",
+]);
+
+const DOCX_MIME_TYPES = new Set([
+  "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+]);
+
+const PRESENTATION_MIME_TYPES = new Set([
+  "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+]);
+
+const SPREADSHEET_MIME_TYPES = new Set([
+  "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  "application/vnd.ms-excel",
 ]);
 
 const OFFICE_TO_PDF_MIME_TYPES = new Set([
   "application/msword",
-  "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
   "application/vnd.oasis.opendocument.text",
   "application/rtf",
   "text/rtf",
@@ -59,6 +83,9 @@ function ensureDirectorySync(dirPath) {
 ensureDirectorySync(LOG_DIR);
 ensureDirectorySync(TEMP_ROOT_DIR);
 
+app.use(cors());
+app.use(express.json({ limit: "120mb" }));
+
 function getLogFilePath() {
   const day = new Date().toISOString().slice(0, 10);
   return path.join(LOG_DIR, `flow-crusade-${day}.log`);
@@ -66,7 +93,31 @@ function getLogFilePath() {
 
 function redactLongText(value, max = 220) {
   if (typeof value !== "string") return value;
-  return value.length > max ? `${value.slice(0, max)}…` : value;
+  const normalized = value.replace(/\s+/g, " ").trim();
+  return normalized.length > max ? `${normalized.slice(0, max)}…` : normalized;
+}
+
+function writeLog(level, event, payload = {}) {
+  const entry = {
+    timestamp: new Date().toISOString(),
+    level,
+    event,
+    ...payload,
+  };
+
+  try {
+    fs.appendFileSync(getLogFilePath(), `${JSON.stringify(entry)}\n`, "utf8");
+  } catch (error) {
+    console.error("[log.write.failed]", error.message);
+  }
+
+  const line = payload.message || payload.error || payload.summary || "";
+  const suffix = payload.requestId ? ` (requestId: ${payload.requestId})` : "";
+  if (level === "error") {
+    console.error(`[${event}] ${line}${suffix}`.trim());
+  } else {
+    console.log(`[${event}] ${line}${suffix}`.trim());
+  }
 }
 
 function buildFileMetaForLogs(file) {
@@ -82,27 +133,8 @@ function buildFileMetaForLogs(file) {
   };
 }
 
-function writeLog(level, event, payload = {}) {
-  const entry = {
-    timestamp: new Date().toISOString(),
-    level,
-    event,
-    ...payload,
-  };
-
-  const line = `${JSON.stringify(entry)}\n`;
-  fs.appendFileSync(getLogFilePath(), line, "utf8");
-
-  if (level === "error") {
-    console.error(`[${event}]`, payload.message || payload.error || "error", payload.requestId ? `(requestId: ${payload.requestId})` : "");
-  } else {
-    console.log(`[${event}]`, payload.message || "", payload.requestId ? `(requestId: ${payload.requestId})` : "");
-  }
-}
-
 function inferMimeTypeFromName(filename = "") {
   const ext = path.extname(filename).toLowerCase();
-
   switch (ext) {
     case ".pdf":
       return "application/pdf";
@@ -110,6 +142,12 @@ function inferMimeTypeFromName(filename = "") {
       return "application/msword";
     case ".docx":
       return "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+    case ".pptx":
+      return "application/vnd.openxmlformats-officedocument.presentationml.presentation";
+    case ".xlsx":
+      return "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+    case ".xls":
+      return "application/vnd.ms-excel";
     case ".odt":
       return "application/vnd.oasis.opendocument.text";
     case ".rtf":
@@ -152,12 +190,33 @@ function getNormalizedMimeType(file) {
 
 function canSendRawToGemini(mimeType = "") {
   if (!mimeType) return false;
-  if (mimeType === "application/pdf") return true;
-  if (SUPPORTED_TEXT_MIME_TYPES.has(mimeType)) return true;
-  if (mimeType.startsWith("image/")) return true;
-  if (mimeType.startsWith("audio/")) return true;
-  if (mimeType.startsWith("video/")) return true;
+  if (DIRECT_GEMINI_MIME_TYPES.has(mimeType)) return true;
+  if (mimeType.startsWith("image/") && ["image/png", "image/jpeg", "image/jpg", "image/webp"].includes(mimeType)) return true;
   return false;
+}
+
+function isTextFile(file) {
+  const mimeType = getNormalizedMimeType(file);
+  const ext = path.extname(file?.name || "").toLowerCase();
+  return SUPPORTED_TEXT_MIME_TYPES.has(mimeType) || [".txt", ".md", ".markdown", ".csv", ".json", ".xml", ".html", ".htm", ".yaml", ".yml"].includes(ext);
+}
+
+function isDocxFile(file) {
+  const mimeType = getNormalizedMimeType(file);
+  const ext = path.extname(file?.name || "").toLowerCase();
+  return DOCX_MIME_TYPES.has(mimeType) || ext === ".docx";
+}
+
+function isPresentationFile(file) {
+  const mimeType = getNormalizedMimeType(file);
+  const ext = path.extname(file?.name || "").toLowerCase();
+  return PRESENTATION_MIME_TYPES.has(mimeType) || ext === ".pptx";
+}
+
+function isSpreadsheetFile(file) {
+  const mimeType = getNormalizedMimeType(file);
+  const ext = path.extname(file?.name || "").toLowerCase();
+  return SPREADSHEET_MIME_TYPES.has(mimeType) || [".xlsx", ".xls"].includes(ext);
 }
 
 function shouldConvertOfficeDocumentToPdf(file) {
@@ -165,7 +224,7 @@ function shouldConvertOfficeDocumentToPdf(file) {
   if (OFFICE_TO_PDF_MIME_TYPES.has(mimeType)) return true;
 
   const ext = path.extname(file?.name || "").toLowerCase();
-  return [".doc", ".docx", ".odt", ".rtf"].includes(ext);
+  return [".doc", ".odt", ".rtf"].includes(ext);
 }
 
 function getGeminiApiKey() {
@@ -180,9 +239,6 @@ function getGeminiApiKey() {
 function hasGeminiApiKey() {
   return Boolean(getGeminiApiKey());
 }
-
-app.use(cors());
-app.use(express.json({ limit: "120mb" }));
 
 function pruneOldContexts() {
   const now = Date.now();
@@ -231,6 +287,10 @@ function sanitizeTitle(text, fallback = "Uploaded Task") {
   if (!text || typeof text !== "string") return fallback;
   const cleaned = text.replace(/\s+/g, " ").trim();
   return cleaned.slice(0, 80) || fallback;
+}
+
+function sanitizeFilename(filename = "uploaded-file") {
+  return filename.replace(/[\\/:*?"<>|]/g, "_").replace(/\s+/g, " ").trim() || "uploaded-file";
 }
 
 function makeStep(idPrefix, index, title, desc) {
@@ -295,6 +355,12 @@ function buildLocalRegeneratedStep(targetNode, slotIndex = 0) {
 }
 
 function buildFilePart(file) {
+  if (file?.textContent) {
+    return {
+      text: `\n\n--- Uploaded file content: ${file.originalName || file.name || "uploaded file"} ---\n${file.textContent}\n--- End uploaded file content ---`,
+    };
+  }
+
   if (!file?.dataBase64 || !file?.mimeType) return null;
   return {
     inlineData: {
@@ -308,77 +374,374 @@ function getFileSummaryText(file) {
   if (!file) return "No uploaded file.";
 
   const originalName = file.originalName || file.name || "unnamed file";
-  const originalMimeType = file.originalMimeType || file.mimeType || "unknown mime";
+  const originalMime = file.originalMimeType || file.mimeType || "unknown mime";
   const originalSize = Number(file.originalSize || file.size || 0);
-  const conversionText = file.wasConvertedToPdf
-    ? ` The file was converted to PDF before sending to Gemini so the layout can be preserved.`
-    : "";
 
-  return `Uploaded file: ${originalName} (${originalMimeType}, ${originalSize} bytes).${conversionText}`;
+  if (file.wasConvertedToPdf) {
+    return `Uploaded file: ${originalName} (${originalMime}, ${originalSize} bytes). It was converted to PDF for Gemini processing as ${file.name} (${file.size || 0} bytes).`;
+  }
+
+  if (file.wasExtractedToText) {
+    return `Uploaded file: ${originalName} (${originalMime}, ${originalSize} bytes). It was extracted to text for Gemini processing as ${file.name} (${file.size || 0} bytes).`;
+  }
+
+  return `Uploaded file: ${originalName} (${originalMime}, ${originalSize} bytes).`;
+}
+
+
+function decodeBase64Text(dataBase64) {
+  return Buffer.from(dataBase64 || "", "base64").toString("utf8");
+}
+
+function normalizeExtractedText(text = "") {
+  return String(text)
+    .replace(/\r\n/g, "\n")
+    .replace(/[\t ]+\n/g, "\n")
+    .replace(/\n{4,}/g, "\n\n\n")
+    .trim();
+}
+
+function decodeXmlEntities(text = "") {
+  return text
+    .replace(/&amp;/g, "&")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"')
+    .replace(/&apos;/g, "'");
+}
+
+function xmlTextToPlainText(xml = "") {
+  return decodeXmlEntities(
+    xml
+      .replace(/<a:br\s*\/>/g, "\n")
+      .replace(/<w:br\s*\/>/g, "\n")
+      .replace(/<[^>]+>/g, " ")
+      .replace(/\s+/g, " ")
+  ).trim();
+}
+
+async function extractTextFile(file, requestId) {
+  const originalName = file?.name || "uploaded-text";
+  const originalMimeType = getNormalizedMimeType(file);
+  const originalSize = Number(file?.size || 0);
+
+  writeLog("info", "file.text.extract.start", {
+    requestId,
+    message: `Reading text content from ${originalName}.`,
+    file: { name: originalName, mimeType: originalMimeType, size: originalSize },
+  });
+
+  const textContent = normalizeExtractedText(decodeBase64Text(file.dataBase64));
+  if (!textContent) {
+    throw new AppError("The uploaded text file is empty.", {
+      statusCode: 400,
+      publicMessage: `The uploaded file ${originalName} does not contain readable text.`,
+    });
+  }
+
+  writeLog("info", "file.text.extract.success", {
+    requestId,
+    message: `Read text content from ${originalName} successfully.`,
+    file: { name: originalName, mimeType: originalMimeType, size: originalSize },
+    extractedCharacters: textContent.length,
+  });
+
+  return {
+    name: `${path.basename(originalName, path.extname(originalName)) || "uploaded-text"}.txt`,
+    mimeType: "text/plain",
+    size: Buffer.byteLength(textContent, "utf8"),
+    textContent,
+    originalName,
+    originalMimeType,
+    originalSize,
+    wasExtractedToText: true,
+    wasConvertedToPdf: false,
+  };
+}
+
+async function extractDocxToText(file, requestId) {
+  const originalName = file?.name || "uploaded-document.docx";
+  const originalMimeType = getNormalizedMimeType(file);
+  const originalSize = Number(file?.size || 0);
+  const buffer = Buffer.from(file.dataBase64, "base64");
+
+  writeLog("info", "file.docx.extract.start", {
+    requestId,
+    message: `Extracting text from ${originalName} for Gemini processing.`,
+    file: { name: originalName, mimeType: originalMimeType, size: originalSize },
+  });
+
+  try {
+    const result = await mammoth.extractRawText({ buffer });
+    const textContent = normalizeExtractedText(result.value || "");
+
+    if (!textContent) {
+      throw new Error("DOCX did not contain readable text.");
+    }
+
+    writeLog("info", "file.docx.extract.success", {
+      requestId,
+      message: `Extracted text from ${originalName} successfully.`,
+      file: { name: originalName, mimeType: originalMimeType, size: originalSize },
+      extractedCharacters: textContent.length,
+      warnings: result.messages?.map((message) => message.message).slice(0, 5) || [],
+    });
+
+    return {
+      name: `${path.basename(originalName, path.extname(originalName)) || "uploaded-document"}.txt`,
+      mimeType: "text/plain",
+      size: Buffer.byteLength(textContent, "utf8"),
+      textContent,
+      originalName,
+      originalMimeType,
+      originalSize,
+      wasExtractedToText: true,
+      wasConvertedToPdf: false,
+    };
+  } catch (error) {
+    writeLog("error", "file.docx.extract.failed", {
+      requestId,
+      message: `Failed to extract text from ${originalName}.`,
+      error: error.message,
+      stack: error.stack,
+      file: { name: originalName, mimeType: originalMimeType, size: originalSize },
+    });
+
+    throw new AppError(error.message, {
+      statusCode: 400,
+      publicMessage: `Failed to read ${originalName}. Please upload a PDF, TXT, or simpler DOCX file.`,
+      details: error.message,
+    });
+  }
+}
+
+async function extractPptxToText(file, requestId) {
+  const originalName = file?.name || "uploaded-presentation.pptx";
+  const originalMimeType = getNormalizedMimeType(file);
+  const originalSize = Number(file?.size || 0);
+  const buffer = Buffer.from(file.dataBase64, "base64");
+
+  writeLog("info", "file.pptx.extract.start", {
+    requestId,
+    message: `Extracting slide text from ${originalName} for Gemini processing.`,
+    file: { name: originalName, mimeType: originalMimeType, size: originalSize },
+  });
+
+  try {
+    const zip = await JSZip.loadAsync(buffer);
+    const slideEntries = Object.keys(zip.files)
+      .filter((name) => /^ppt\/slides\/slide\d+\.xml$/i.test(name))
+      .sort((a, b) => Number(a.match(/slide(\d+)\.xml/i)?.[1] || 0) - Number(b.match(/slide(\d+)\.xml/i)?.[1] || 0));
+
+    const slides = [];
+    for (const entry of slideEntries) {
+      const xml = await zip.files[entry].async("string");
+      const slideNumber = entry.match(/slide(\d+)\.xml/i)?.[1] || String(slides.length + 1);
+      const text = normalizeExtractedText(xmlTextToPlainText(xml));
+      if (text) slides.push(`Slide ${slideNumber}:\n${text}`);
+    }
+
+    const textContent = normalizeExtractedText(slides.join("\n\n"));
+    if (!textContent) {
+      throw new Error("PPTX did not contain readable slide text.");
+    }
+
+    writeLog("info", "file.pptx.extract.success", {
+      requestId,
+      message: `Extracted slide text from ${originalName} successfully.`,
+      file: { name: originalName, mimeType: originalMimeType, size: originalSize },
+      slideCount: slides.length,
+      extractedCharacters: textContent.length,
+    });
+
+    return {
+      name: `${path.basename(originalName, path.extname(originalName)) || "uploaded-presentation"}.txt`,
+      mimeType: "text/plain",
+      size: Buffer.byteLength(textContent, "utf8"),
+      textContent,
+      originalName,
+      originalMimeType,
+      originalSize,
+      wasExtractedToText: true,
+      wasConvertedToPdf: false,
+    };
+  } catch (error) {
+    writeLog("error", "file.pptx.extract.failed", {
+      requestId,
+      message: `Failed to extract slide text from ${originalName}.`,
+      error: error.message,
+      stack: error.stack,
+      file: { name: originalName, mimeType: originalMimeType, size: originalSize },
+    });
+
+    throw new AppError(error.message, {
+      statusCode: 400,
+      publicMessage: `Failed to read ${originalName}. Please upload a PDF, TXT, or simpler PPTX file.`,
+      details: error.message,
+    });
+  }
+}
+
+async function extractSpreadsheetToText(file, requestId) {
+  const originalName = file?.name || "uploaded-spreadsheet.xlsx";
+  const originalMimeType = getNormalizedMimeType(file);
+  const originalSize = Number(file?.size || 0);
+  const buffer = Buffer.from(file.dataBase64, "base64");
+
+  writeLog("info", "file.spreadsheet.extract.start", {
+    requestId,
+    message: `Extracting spreadsheet text from ${originalName} for Gemini processing.`,
+    file: { name: originalName, mimeType: originalMimeType, size: originalSize },
+  });
+
+  try {
+    const workbook = XLSX.read(buffer, { type: "buffer", cellDates: true });
+    const sheetText = workbook.SheetNames.map((sheetName) => {
+      const csv = XLSX.utils.sheet_to_csv(workbook.Sheets[sheetName], { blankrows: false });
+      return csv.trim() ? `Sheet: ${sheetName}\n${csv.trim()}` : "";
+    }).filter(Boolean);
+
+    const textContent = normalizeExtractedText(sheetText.join("\n\n"));
+    if (!textContent) {
+      throw new Error("Spreadsheet did not contain readable cells.");
+    }
+
+    writeLog("info", "file.spreadsheet.extract.success", {
+      requestId,
+      message: `Extracted spreadsheet text from ${originalName} successfully.`,
+      file: { name: originalName, mimeType: originalMimeType, size: originalSize },
+      sheetCount: sheetText.length,
+      extractedCharacters: textContent.length,
+    });
+
+    return {
+      name: `${path.basename(originalName, path.extname(originalName)) || "uploaded-spreadsheet"}.txt`,
+      mimeType: "text/plain",
+      size: Buffer.byteLength(textContent, "utf8"),
+      textContent,
+      originalName,
+      originalMimeType,
+      originalSize,
+      wasExtractedToText: true,
+      wasConvertedToPdf: false,
+    };
+  } catch (error) {
+    writeLog("error", "file.spreadsheet.extract.failed", {
+      requestId,
+      message: `Failed to extract spreadsheet text from ${originalName}.`,
+      error: error.message,
+      stack: error.stack,
+      file: { name: originalName, mimeType: originalMimeType, size: originalSize },
+    });
+
+    throw new AppError(error.message, {
+      statusCode: 400,
+      publicMessage: `Failed to read ${originalName}. Please upload a PDF, CSV, TXT, or simpler spreadsheet file.`,
+      details: error.message,
+    });
+  }
 }
 
 async function convertOfficeDocumentToPdf(file, requestId) {
-  const tempDir = await fsp.mkdtemp(path.join(TEMP_ROOT_DIR, "office-"));
-  const inputExt = path.extname(file?.name || "") || ".bin";
-  const sourceName = `source${inputExt}`;
-  const sourcePath = path.join(tempDir, sourceName);
-  const outputPath = path.join(tempDir, "source.pdf");
+  const originalName = file?.name || "uploaded-document";
+  const originalMimeType = getNormalizedMimeType(file);
+  const originalSize = Number(file?.size || 0);
+  const safeName = sanitizeFilename(originalName);
+  const requestDir = path.join(TEMP_ROOT_DIR, requestId);
+  const inputDir = path.join(requestDir, "input");
+  const outputDir = path.join(requestDir, "output");
+  const ext = path.extname(safeName) || ".bin";
+  const baseName = path.basename(safeName, ext) || "uploaded-document";
+  const inputPath = path.join(inputDir, `${baseName}${ext}`);
+  const expectedPdfPath = path.join(outputDir, `${baseName}.pdf`);
+
+  writeLog("info", "file.convert.start", {
+    requestId,
+    message: `Converting ${originalName} to PDF for Gemini processing.`,
+    file: {
+      name: originalName,
+      mimeType: originalMimeType,
+      size: originalSize,
+    },
+  });
 
   try {
-    const rawBuffer = Buffer.from(file.dataBase64, "base64");
-    await fsp.writeFile(sourcePath, rawBuffer);
+    await fsp.mkdir(inputDir, { recursive: true });
+    await fsp.mkdir(outputDir, { recursive: true });
+    await fsp.writeFile(inputPath, Buffer.from(file.dataBase64, "base64"));
 
-    writeLog("info", "file.convert.start", {
-      requestId,
-      message: `Converting ${file.name || "office document"} to PDF for Gemini processing.`,
-      file: buildFileMetaForLogs(file),
-      tempDir,
+    const args = ["--headless", "--convert-to", "pdf", "--outdir", outputDir, inputPath];
+    const { stdout = "", stderr = "" } = await execFileAsync("soffice", args, {
+      timeout: 120000,
+      maxBuffer: 10 * 1024 * 1024,
+      env: {
+        ...process.env,
+        HOME: process.env.HOME || os.homedir(),
+      },
     });
 
-    await execFileAsync(
-      "libreoffice",
-      ["--headless", "--convert-to", "pdf", "--outdir", tempDir, sourcePath],
-      {
-        cwd: tempDir,
-        timeout: 120000,
-        maxBuffer: 10 * 1024 * 1024,
-      }
-    );
+    let pdfPath = expectedPdfPath;
+    const exists = await fsp
+      .access(pdfPath)
+      .then(() => true)
+      .catch(() => false);
 
-    const pdfBuffer = await fsp.readFile(outputPath);
-    const convertedFile = {
-      name: `${path.basename(file.name || "uploaded-file", inputExt)}.pdf`,
+    if (!exists) {
+      const outputFiles = await fsp.readdir(outputDir).catch(() => []);
+      const fallbackPdf = outputFiles.find((name) => name.toLowerCase().endsWith(".pdf"));
+      if (!fallbackPdf) {
+        throw new Error(`LibreOffice completed without producing a PDF. stdout=${stdout} stderr=${stderr}`);
+      }
+      pdfPath = path.join(outputDir, fallbackPdf);
+    }
+
+    const pdfBuffer = await fsp.readFile(pdfPath);
+    writeLog("info", "file.convert.success", {
+      requestId,
+      message: `Converted ${originalName} to PDF successfully.`,
+      file: {
+        name: originalName,
+        mimeType: originalMimeType,
+        size: originalSize,
+      },
+      conversion: {
+        outputName: path.basename(pdfPath),
+        outputSize: pdfBuffer.length,
+        stdout: redactLongText(stdout, 1200),
+        stderr: redactLongText(stderr, 1200),
+      },
+    });
+
+    return {
+      name: path.basename(pdfPath),
       mimeType: "application/pdf",
       size: pdfBuffer.length,
       dataBase64: pdfBuffer.toString("base64"),
-      originalName: file.name || null,
-      originalMimeType: getNormalizedMimeType(file),
-      originalSize: Number(file.size || rawBuffer.length || 0),
+      originalName,
+      originalMimeType,
+      originalSize,
       wasConvertedToPdf: true,
     };
-
-    writeLog("info", "file.convert.success", {
-      requestId,
-      message: `Converted ${file.name || "office document"} to PDF successfully.`,
-      file: buildFileMetaForLogs(convertedFile),
-    });
-
-    return convertedFile;
   } catch (error) {
     writeLog("error", "file.convert.failed", {
       requestId,
-      message: `Failed to convert ${file?.name || "office document"} to PDF.`,
-      file: buildFileMetaForLogs(file),
+      message: `Failed to convert ${originalName} to PDF.`,
       error: error.message,
+      stack: error.stack,
+      file: {
+        name: originalName,
+        mimeType: originalMimeType,
+        size: originalSize,
+      },
     });
 
-    throw new AppError(`Failed to convert ${file?.name || "uploaded document"} to PDF.`, {
+    throw new AppError(error.message, {
       statusCode: 400,
-      publicMessage: `We couldn't prepare your Word document (${file?.name || "unnamed file"}) for Gemini. Please retry or export it as PDF and upload again.`,
+      publicMessage: `Failed to convert ${originalName} to PDF for Gemini processing.`,
       details: error.message,
     });
   } finally {
-    await fsp.rm(tempDir, { recursive: true, force: true }).catch(() => {});
+    await fsp.rm(requestDir, { recursive: true, force: true }).catch(() => {});
   }
 }
 
@@ -389,62 +752,86 @@ async function prepareFileForGemini(file, requestId) {
   const normalizedFile = {
     name: file.name || "uploaded-file",
     mimeType: normalizedMimeType,
-    size: Number(file.size || 0),
+    size: Number(file.size) || 0,
     dataBase64: file.dataBase64,
-    originalName: file.name || null,
+    originalName: file.name || "uploaded-file",
     originalMimeType: normalizedMimeType,
-    originalSize: Number(file.size || 0),
+    originalSize: Number(file.size) || 0,
     wasConvertedToPdf: false,
+    wasExtractedToText: false,
   };
 
+  // PDF and supported images go directly to Gemini native multimodal input.
   if (canSendRawToGemini(normalizedMimeType)) {
     writeLog("info", "file.prepare.raw", {
       requestId,
-      message: `Sending ${normalizedFile.name} to Gemini in raw format.`,
+      message: `Using ${normalizedFile.originalName} as a raw Gemini input.`,
       file: buildFileMetaForLogs(normalizedFile),
     });
     return normalizedFile;
   }
 
+  // TXT/MD/CSV/JSON/XML/HTML/YAML are read into the prompt as text.
+  if (isTextFile(normalizedFile)) {
+    return extractTextFile(normalizedFile, requestId);
+  }
+
+  // DOCX is parsed locally instead of being converted to PDF.
+  if (isDocxFile(normalizedFile)) {
+    return extractDocxToText(normalizedFile, requestId);
+  }
+
+  // PPTX is parsed locally into slide text.
+  if (isPresentationFile(normalizedFile)) {
+    return extractPptxToText(normalizedFile, requestId);
+  }
+
+  // XLS/XLSX is parsed locally into sheet text / CSV-like content.
+  if (isSpreadsheetFile(normalizedFile)) {
+    return extractSpreadsheetToText(normalizedFile, requestId);
+  }
+
+  // Legacy office formats are converted to PDF only as a fallback strategy.
   if (shouldConvertOfficeDocumentToPdf(normalizedFile)) {
     return convertOfficeDocumentToPdf(normalizedFile, requestId);
   }
 
   writeLog("error", "file.prepare.unsupported", {
     requestId,
-    message: `Unsupported uploaded file type: ${normalizedMimeType}`,
+    message: `Unsupported upload type for Gemini processing: ${normalizedFile.originalName}.`,
     file: buildFileMetaForLogs(normalizedFile),
   });
 
-  throw new AppError(`Unsupported uploaded file type: ${normalizedMimeType}`, {
+  throw new AppError("Unsupported upload type", {
     statusCode: 400,
-    publicMessage: `This upload type isn't supported yet: ${normalizedFile.name}. Please use PDF, image, plain text, or a Word document (.doc/.docx).`,
-    details: `Unsupported MIME type: ${normalizedMimeType}`,
+    publicMessage: `Unsupported file type: ${normalizedFile.originalName}. Please upload PDF, PNG/JPG/WebP, TXT/MD, DOCX, PPTX, XLSX, or legacy DOC/RTF/ODT files.`,
+    details: `Unsupported mime type: ${normalizedMimeType}`,
   });
 }
 
-async function callGemini(parts, requestId, actionLabel = "gemini-request") {
+async function callGemini(parts, { requestId, operation }) {
   const apiKey = getGeminiApiKey();
-
   if (!apiKey) {
-    throw new AppError("Missing Gemini API key in environment.", {
-      statusCode: 500,
-      publicMessage: "Gemini is not configured on the server. Set GEMINI_API_KEY (or GOOGLE_API_KEY / API_KEY) in the environment and restart the server.",
-      details: "Missing Gemini API key in environment.",
+    writeLog("error", "gemini.key.missing", {
+      requestId,
+      message: "Gemini API key was not found in the environment.",
     });
+    throw new Error("Gemini API key is missing from the environment.");
   }
 
-  const models = [
-    "gemini-2.5-flash",
-    "gemini-3-flash-preview",
-    "gemini-1.5-pro",
-  ];
-
+  const models = ["gemini-3-flash-preview"];
   let lastError = null;
 
   for (const model of models) {
     for (let attempt = 1; attempt <= 3; attempt++) {
       const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`;
+      writeLog("info", "gemini.request.start", {
+        requestId,
+        summary: `${operation} via ${model} attempt ${attempt}.`,
+        model,
+        attempt,
+        operation,
+      });
 
       const response = await fetch(url, {
         method: "POST",
@@ -464,23 +851,24 @@ async function callGemini(parts, requestId, actionLabel = "gemini-request") {
       if (response.ok) {
         writeLog("info", "gemini.request.success", {
           requestId,
-          message: `${actionLabel} succeeded on ${model}.`,
+          summary: `${operation} succeeded with ${model} on attempt ${attempt}.`,
           model,
           attempt,
+          operation,
         });
         return response.json();
       }
 
       const errText = await response.text();
       lastError = errText;
-
-      writeLog(response.status >= 500 ? "error" : "info", "gemini.request.retry", {
+      writeLog("error", "gemini.request.error", {
         requestId,
-        message: `${actionLabel} failed on ${model} attempt ${attempt}.`,
+        message: `${operation} failed with ${model} on attempt ${attempt}.`,
         model,
         attempt,
+        operation,
         status: response.status,
-        error: redactLongText(errText, 400),
+        error: redactLongText(errText, 1800),
       });
 
       if (response.status === 503 && attempt < 3) {
@@ -545,20 +933,20 @@ ${getFileSummaryText(file)}
   if (filePart) parts.push(filePart);
 
   try {
-    const data = await callGemini(parts, requestId, "initial breakdown");
+    const data = await callGemini(parts, { requestId, operation: "initial-breakdown" });
     const content = data.candidates?.[0]?.content?.parts?.[0]?.text ?? "";
     const parsed = safeJsonParse(content);
 
     if (!parsed || !Array.isArray(parsed.steps) || parsed.steps.length !== 3) {
-      writeLog("info", "breakdown.initial.fallback", {
+      writeLog("info", "gemini.fallback.initial", {
         requestId,
-        message: "Gemini returned an invalid initial breakdown payload. Falling back to local breakdown.",
+        message: "Gemini returned an invalid initial breakdown shape. Falling back locally.",
       });
       return buildLocalInitialBreakdown(taskInput, file);
     }
 
     return {
-      rootTitle: sanitizeTitle(parsed.rootTitle, sanitizeTitle(taskInput || file?.originalName || file?.name?.replace(/\.[^.]+$/, "") || "Uploaded Task")),
+      rootTitle: sanitizeTitle(parsed.rootTitle, sanitizeTitle(taskInput || (file?.originalName || file?.name || "Uploaded Task").replace(/\.[^.]+$/, ""))),
       rootDescription: parsed.rootDescription || taskInput || `Plan derived from ${file?.originalName || file?.name || "uploaded file"}.`,
       steps: parsed.steps.slice(0, 3).map((step, index) => ({
         id: `step-${index + 1}`,
@@ -572,14 +960,10 @@ ${getFileSummaryText(file)}
       source: "gemini",
     };
   } catch (error) {
-    if (error instanceof AppError) throw error;
-
-    writeLog("error", "breakdown.initial.error", {
+    writeLog("info", "gemini.fallback.initial", {
       requestId,
-      message: "Initial breakdown failed in Gemini. Falling back to local breakdown.",
+      message: "Initial breakdown fell back to local generation.",
       error: error.message,
-      taskPreview: redactLongText(taskInput?.trim() || "<empty>", 180),
-      file: buildFileMetaForLogs(file),
     });
     return buildLocalInitialBreakdown(taskInput, file);
   }
@@ -640,15 +1024,14 @@ ${getFileSummaryText(file)}
   if (filePart) parts.push(filePart);
 
   try {
-    const data = await callGemini(parts, requestId, "node breakdown");
+    const data = await callGemini(parts, { requestId, operation: "breakdown-node" });
     const content = data.candidates?.[0]?.content?.parts?.[0]?.text ?? "";
     const parsed = safeJsonParse(content);
 
     if (!parsed || !Array.isArray(parsed.steps) || parsed.steps.length !== 3) {
-      writeLog("info", "breakdown.node.fallback", {
+      writeLog("info", "gemini.fallback.breakdown-node", {
         requestId,
-        message: "Gemini returned an invalid node breakdown payload. Falling back to local child breakdown.",
-        targetNodeTitle: targetNode?.title || null,
+        message: "Gemini returned an invalid child breakdown shape. Falling back locally.",
       });
       return buildLocalChildBreakdown(targetNode?.title);
     }
@@ -666,15 +1049,10 @@ ${getFileSummaryText(file)}
       source: "gemini",
     };
   } catch (error) {
-    if (error instanceof AppError) throw error;
-
-    writeLog("error", "breakdown.node.error", {
+    writeLog("info", "gemini.fallback.breakdown-node", {
       requestId,
-      message: "Node breakdown failed in Gemini. Falling back to local child breakdown.",
+      message: "Child breakdown fell back to local generation.",
       error: error.message,
-      targetNodeTitle: targetNode?.title || null,
-      parentNodeTitle: parentNode?.title || null,
-      file: buildFileMetaForLogs(file),
     });
     return buildLocalChildBreakdown(targetNode?.title);
   }
@@ -738,15 +1116,14 @@ ${getFileSummaryText(file)}
   if (filePart) parts.push(filePart);
 
   try {
-    const data = await callGemini(parts, requestId, "single-node regeneration");
+    const data = await callGemini(parts, { requestId, operation: "regenerate-node" });
     const content = data.candidates?.[0]?.content?.parts?.[0]?.text ?? "";
     const parsed = safeJsonParse(content);
 
     if (!parsed?.step) {
-      writeLog("info", "breakdown.regenerate.fallback", {
+      writeLog("info", "gemini.fallback.regenerate-node", {
         requestId,
-        message: "Gemini returned an invalid regenerate payload. Falling back to local regenerated step.",
-        targetNodeTitle: targetNode?.title || null,
+        message: "Gemini returned an invalid regenerate-node shape. Falling back locally.",
       });
       return buildLocalRegeneratedStep(targetNode, slotIndex);
     }
@@ -764,113 +1141,83 @@ ${getFileSummaryText(file)}
       source: "gemini",
     };
   } catch (error) {
-    if (error instanceof AppError) throw error;
-
-    writeLog("error", "breakdown.regenerate.error", {
+    writeLog("info", "gemini.fallback.regenerate-node", {
       requestId,
-      message: "Single-node regenerate failed in Gemini. Falling back to local regenerated step.",
+      message: "Regenerate-node fell back to local generation.",
       error: error.message,
-      targetNodeTitle: targetNode?.title || null,
-      parentNodeTitle: parentNode?.title || null,
-      file: buildFileMetaForLogs(file),
     });
     return buildLocalRegeneratedStep(targetNode, slotIndex);
   }
 }
 
-function summarizeAction(reqBody = {}) {
-  const mode = reqBody?.mode || "initial";
-
-  if (mode === "initial") {
-    const taskInput = typeof reqBody?.taskInput === "string" ? reqBody.taskInput.trim() : "";
-    const file = reqBody?.file || null;
-    return {
-      action: "initial-breakdown",
-      mode,
-      taskInputLength: taskInput.length,
-      taskPreview: redactLongText(taskInput || "<empty>", 180),
-      hasFile: Boolean(file?.dataBase64),
-      fileName: file?.name || null,
-      fileMimeType: file?.mimeType || inferMimeTypeFromName(file?.name || ""),
-      fileSize: Number(file?.size || 0),
-    };
-  }
-
-  return {
-    action: mode,
-    mode,
-    contextId: reqBody?.contextId || null,
-    targetNodeId: reqBody?.targetNode?.id || null,
-    targetNodeTitle: redactLongText(reqBody?.targetNode?.title || "", 120),
-    parentNodeId: reqBody?.parentNode?.id || null,
-    parentNodeTitle: redactLongText(reqBody?.parentNode?.title || "", 120),
-    siblingCount: Array.isArray(reqBody?.siblingNodes) ? reqBody.siblingNodes.length : 0,
-  };
-}
-
 app.post("/api/breakdown", async (req, res) => {
-  const requestId = crypto.randomUUID();
-  const actionSummary = summarizeAction(req.body || {});
+  pruneOldContexts();
 
-  writeLog("info", "request.received", {
-    requestId,
-    message: `Received ${actionSummary.action}.`,
-    ...actionSummary,
-  });
+  const requestId = crypto.randomUUID();
+  const { mode = "initial" } = req.body ?? {};
 
   try {
-    pruneOldContexts();
-
-    const { mode = "initial" } = req.body ?? {};
+    writeLog("info", "request.received", {
+      requestId,
+      mode,
+      summary: `Received ${mode} request.`,
+    });
 
     if (mode === "initial") {
       const { taskInput = "", file = null } = req.body ?? {};
-      const hasTaskInput = typeof taskInput === "string" && taskInput.trim().length > 0;
-      const hasFile = !!file?.dataBase64;
+      const trimmedTaskInput = typeof taskInput === "string" ? taskInput.trim() : "";
+      const hasTaskInput = trimmedTaskInput.length > 0;
+      const hasFile = Boolean(file?.dataBase64);
+
+      writeLog("info", "request.user-action", {
+        requestId,
+        mode,
+        summary: hasFile && hasTaskInput
+          ? "User submitted text plus a file for initial breakdown."
+          : hasFile
+            ? "User submitted a file-only initial breakdown request."
+            : "User submitted a text-only initial breakdown request.",
+        taskInputPreview: redactLongText(trimmedTaskInput),
+        hasTaskInput,
+        hasFile,
+        file: hasFile
+          ? {
+              name: file.name || null,
+              mimeType: getNormalizedMimeType(file),
+              size: Number(file.size || 0),
+            }
+          : null,
+      });
 
       if (!hasTaskInput && !hasFile) {
-        writeLog("info", "request.rejected", {
-          requestId,
-          message: "Rejected empty initial request.",
-          ...actionSummary,
-        });
-        return res.status(400).json({
-          error: "Please enter a task or upload a file before sending.",
-          requestId,
+        throw new AppError("Please enter a task or upload a file before sending.", {
+          statusCode: 400,
+          publicMessage: "Please enter a task or upload a file before sending.",
         });
       }
 
-      const preparedFile = hasFile
-        ? await prepareFileForGemini(
-            {
-              name: file.name,
-              mimeType: file.mimeType,
-              size: Number(file.size) || 0,
-              dataBase64: file.dataBase64,
-            },
-            requestId
-          )
-        : null;
-
+      const processedFile = hasFile ? await prepareFileForGemini(file, requestId) : null;
       const contextId = crypto.randomUUID();
+
       contextStore.set(contextId, {
         createdAt: Date.now(),
-        taskInput: hasTaskInput ? taskInput.trim() : "",
-        file: preparedFile,
+        taskInput: trimmedTaskInput,
+        file: processedFile,
       });
 
       const result = await generateInitialBreakdown({
-        taskInput: hasTaskInput ? taskInput.trim() : "",
-        file: preparedFile,
+        taskInput: trimmedTaskInput,
+        file: processedFile,
         requestId,
       });
 
-      writeLog("info", "request.completed", {
+      writeLog("info", "request.succeeded", {
         requestId,
-        message: `Completed initial-breakdown successfully.`,
+        mode,
         contextId,
+        summary: `Completed ${mode} request successfully.`,
         source: result.source,
-        file: buildFileMetaForLogs(preparedFile),
+        file: buildFileMetaForLogs(processedFile),
       });
 
       return res.json({
@@ -882,27 +1229,47 @@ app.post("/api/breakdown", async (req, res) => {
 
     const { contextId, rootContext, targetNode, parentNode, siblingNodes = [] } = req.body ?? {};
     if (!contextId || !contextStore.has(contextId)) {
-      writeLog("info", "request.rejected", {
-        requestId,
-        message: "Rejected breakdown request because original context was missing.",
-        ...actionSummary,
-      });
-      return res.status(400).json({
-        error: "The original task context was not found. Please re-upload and try again.",
-        requestId,
+      throw new AppError("The original task context was not found.", {
+        statusCode: 400,
+        publicMessage: "The original task context was not found. Please re-upload and try again.",
       });
     }
 
     const storedContext = contextStore.get(contextId);
     storedContext.createdAt = Date.now();
 
+    writeLog("info", "request.user-action", {
+      requestId,
+      mode,
+      contextId,
+      summary:
+        mode === "breakdown-node"
+          ? "User requested a deeper breakdown for a single subtask."
+          : mode === "regenerate-node"
+            ? "User requested regenerate for a single subtask."
+            : `User requested ${mode}.`,
+      targetNode: targetNode
+        ? {
+            id: targetNode.id || null,
+            title: targetNode.title || null,
+            descPreview: redactLongText(targetNode.desc || ""),
+          }
+        : null,
+      parentNode: parentNode
+        ? {
+            id: parentNode.id || null,
+            title: parentNode.title || null,
+          }
+        : null,
+      hasOriginalFile: Boolean(storedContext.file),
+      originalTaskInputPreview: redactLongText(storedContext.taskInput || ""),
+    });
+
     if (!targetNode?.id) {
-      writeLog("info", "request.rejected", {
-        requestId,
-        message: "Rejected breakdown request because targetNode was missing.",
-        ...actionSummary,
+      throw new AppError("targetNode is required", {
+        statusCode: 400,
+        publicMessage: "targetNode is required.",
       });
-      return res.status(400).json({ error: "targetNode is required", requestId });
     }
 
     if (mode === "breakdown-node") {
@@ -917,17 +1284,18 @@ app.post("/api/breakdown", async (req, res) => {
         requestId,
       });
 
-      writeLog("info", "request.completed", {
+      writeLog("info", "request.succeeded", {
         requestId,
-        message: `Completed breakdown-node successfully for ${targetNode.title || targetNode.id}.`,
+        mode,
         contextId,
-        targetNodeId: targetNode.id,
-        targetNodeTitle: targetNode.title || null,
-        file: buildFileMetaForLogs(storedContext.file),
+        summary: `Completed ${mode} request successfully.`,
         source: result.source,
       });
 
-      return res.json({ ...result, requestId });
+      return res.json({
+        ...result,
+        requestId,
+      });
     }
 
     if (mode === "regenerate-node") {
@@ -945,36 +1313,36 @@ app.post("/api/breakdown", async (req, res) => {
         requestId,
       });
 
-      writeLog("info", "request.completed", {
+      writeLog("info", "request.succeeded", {
         requestId,
-        message: `Completed regenerate-node successfully for ${targetNode.title || targetNode.id}.`,
+        mode,
         contextId,
-        targetNodeId: targetNode.id,
-        targetNodeTitle: targetNode.title || null,
-        file: buildFileMetaForLogs(storedContext.file),
+        summary: `Completed ${mode} request successfully.`,
         source: result.source,
       });
 
-      return res.json({ ...result, requestId });
+      return res.json({
+        ...result,
+        requestId,
+      });
     }
 
-    writeLog("info", "request.rejected", {
-      requestId,
-      message: `Rejected unsupported breakdown mode: ${mode}.`,
-      ...actionSummary,
+    throw new AppError("Unsupported breakdown mode", {
+      statusCode: 400,
+      publicMessage: "Unsupported breakdown mode.",
     });
-    return res.status(400).json({ error: "Unsupported breakdown mode", requestId });
   } catch (error) {
     const statusCode = error instanceof AppError ? error.statusCode : 500;
-    const publicMessage = error instanceof AppError ? error.publicMessage : "Something went wrong while processing your task request. Check the server log for details.";
+    const publicMessage = error instanceof AppError ? error.publicMessage : "Internal server error";
+    const details = error instanceof AppError ? error.details : error.message;
 
     writeLog("error", "request.failed", {
       requestId,
-      message: `Request failed while handling ${actionSummary.action}.`,
-      ...actionSummary,
+      mode,
+      message: `Request failed while handling ${mode}.`,
       error: error.message,
-      details: redactLongText(error.details || "", 400),
-      stack: redactLongText(error.stack || "", 1000),
+      details,
+      stack: error.stack,
     });
 
     return res.status(statusCode).json({
@@ -985,15 +1353,7 @@ app.post("/api/breakdown", async (req, res) => {
 });
 
 app.listen(PORT, () => {
-  writeLog("info", "server.started", {
-    message: `AI server running at http://localhost:${PORT}`,
-    port: PORT,
-    projectRoot: PROJECT_ROOT,
-    logFilePath: getLogFilePath(),
-    geminiApiKeySource: hasGeminiApiKey() ? "environment loaded" : "missing",
-  });
-
   console.log(`🚀 AI server running at http://localhost:${PORT}`);
   console.log(`🔐 Gemini API key source: ${hasGeminiApiKey() ? "environment loaded" : "missing"}`);
-  console.log(`🪵 Request logs: ${getLogFilePath()}`);
+  console.log(`📝 Request logs: ${LOG_DIR}`);
 });
