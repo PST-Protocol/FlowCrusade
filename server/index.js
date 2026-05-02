@@ -1165,6 +1165,226 @@ ${getFileSummaryText(file)}
   }
 }
 
+
+// ================= STATS API + LOCAL JSON STORAGE =================
+const STATS_FILE = path.join(__dirname, "data", "stats.json");
+
+function ensureStatsFile() {
+  const dataDir = path.dirname(STATS_FILE);
+  fs.mkdirSync(dataDir, { recursive: true });
+
+  if (!fs.existsSync(STATS_FILE)) {
+    fs.writeFileSync(
+      STATS_FILE,
+      JSON.stringify(
+        {
+          focusSessions: [],
+          completedTasks: [],
+          distractionEvents: [],
+        },
+        null,
+        2
+      ),
+      "utf8"
+    );
+  }
+}
+
+function readStatsData() {
+  ensureStatsFile();
+  try {
+    const parsed = JSON.parse(fs.readFileSync(STATS_FILE, "utf8"));
+    return {
+      focusSessions: Array.isArray(parsed.focusSessions) ? parsed.focusSessions : [],
+      completedTasks: Array.isArray(parsed.completedTasks) ? parsed.completedTasks : [],
+      distractionEvents: Array.isArray(parsed.distractionEvents) ? parsed.distractionEvents : [],
+    };
+  } catch (error) {
+    writeLog("error", "stats.read.failed", { error: error.message });
+    return { focusSessions: [], completedTasks: [], distractionEvents: [] };
+  }
+}
+
+function writeStatsData(data) {
+  ensureStatsFile();
+  fs.writeFileSync(STATS_FILE, JSON.stringify(data, null, 2), "utf8");
+}
+
+function toSafeNumber(value, fallback = 0) {
+  const n = Number(value);
+  return Number.isFinite(n) ? n : fallback;
+}
+
+function isSameLocalDay(iso, date = new Date()) {
+  if (!iso) return false;
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return false;
+  return d.getFullYear() === date.getFullYear()
+    && d.getMonth() === date.getMonth()
+    && d.getDate() === date.getDate();
+}
+
+function getDayKey(iso) {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return null;
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+
+function computeStreak(focusSessions = []) {
+  const activeDays = new Set(
+    focusSessions
+      .map((session) => getDayKey(session.endedAt || session.startedAt))
+      .filter(Boolean)
+  );
+
+  let streak = 0;
+  const cursor = new Date();
+  cursor.setHours(12, 0, 0, 0);
+
+  while (true) {
+    const key = getDayKey(cursor.toISOString());
+    if (!activeDays.has(key)) break;
+    streak += 1;
+    cursor.setDate(cursor.getDate() - 1);
+  }
+
+  return streak;
+}
+
+function computePeakFocusTime(focusSessions = []) {
+  const buckets = new Array(24).fill(0);
+
+  focusSessions.forEach((session) => {
+    const endedAt = session.endedAt || session.startedAt;
+    const d = new Date(endedAt);
+    if (Number.isNaN(d.getTime())) return;
+    buckets[d.getHours()] += toSafeNumber(session.minutes);
+  });
+
+  const max = Math.max(...buckets);
+  if (max <= 0) return "";
+
+  const hour = buckets.findIndex((value) => value === max);
+  const start = `${String(hour).padStart(2, "0")}:00`;
+  const end = `${String((hour + 1) % 24).padStart(2, "0")}:00`;
+  return `${start} - ${end}`;
+}
+
+function computeStats(data) {
+  const today = new Date();
+  const todayFocus = data.focusSessions.filter((session) => isSameLocalDay(session.endedAt || session.startedAt, today));
+  const todayCompleted = data.completedTasks.filter((task) => isSameLocalDay(task.completedAt, today));
+  const todayDistractions = data.distractionEvents.filter((event) => isSameLocalDay(event.timestamp, today));
+
+  const focusTimeToday = todayFocus.reduce((sum, session) => sum + toSafeNumber(session.minutes), 0);
+  const taskCompletionMinutes = todayCompleted.reduce((sum, task) => sum + toSafeNumber(task.estimatedMinutes, 10), 0);
+  const distractTime = todayDistractions.reduce((sum, event) => sum + toSafeNumber(event.minutes), 0);
+  const weightedCredit = Math.round(focusTimeToday * 0.6 + taskCompletionMinutes * 0.4);
+
+  const sourceMinutes = new Map();
+  todayDistractions.forEach((event) => {
+    const source = event.appName || event.source || "Unknown";
+    sourceMinutes.set(source, (sourceMinutes.get(source) || 0) + toSafeNumber(event.minutes));
+  });
+
+  const topDistractions = Array.from(sourceMinutes.entries())
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 3)
+    .map(([source]) => source);
+
+  const completionRate = todayCompleted.length || todayFocus.length
+    ? Math.round((todayCompleted.length / Math.max(1, todayCompleted.length + todayFocus.length)) * 100)
+    : 0;
+
+  return {
+    focusTimeToday,
+    taskCompletionMinutes,
+    weightedCredit,
+    focusScore: weightedCredit,
+    sessions: todayFocus.length,
+    avgSession: todayFocus.length ? Math.round(focusTimeToday / todayFocus.length) : 0,
+    completionRate,
+    topDistractions,
+    distractCount: todayDistractions.length,
+    distractTime,
+    peakFocusTime: computePeakFocusTime(todayFocus),
+    streak: computeStreak(data.focusSessions),
+    maxScore: 1000,
+    raw: {
+      focusSessions: data.focusSessions,
+      completedTasks: data.completedTasks,
+      distractionEvents: data.distractionEvents,
+    },
+  };
+}
+
+app.get("/api/stats", (req, res) => {
+  const data = readStatsData();
+  res.json(computeStats(data));
+});
+
+app.post("/api/stats/focus-session", (req, res) => {
+  const { taskId, taskTitle, minutes, startedAt, endedAt } = req.body ?? {};
+  const safeMinutes = Math.max(0, toSafeNumber(minutes));
+
+  if (!taskId || safeMinutes <= 0) {
+    return res.status(400).json({ error: "taskId and positive minutes are required." });
+  }
+
+  const data = readStatsData();
+  data.focusSessions.push({
+    id: crypto.randomUUID(),
+    taskId,
+    taskTitle: taskTitle || "Untitled Task",
+    minutes: safeMinutes,
+    startedAt: startedAt || new Date().toISOString(),
+    endedAt: endedAt || new Date().toISOString(),
+  });
+
+  writeStatsData(data);
+  res.json(computeStats(data));
+});
+
+app.post("/api/stats/completed-task", (req, res) => {
+  const { taskId, taskTitle, estimatedMinutes, completedAt } = req.body ?? {};
+
+  if (!taskId) {
+    return res.status(400).json({ error: "taskId is required." });
+  }
+
+  const data = readStatsData();
+  const alreadyCompleted = data.completedTasks.some((task) => task.taskId === taskId);
+
+  if (!alreadyCompleted) {
+    data.completedTasks.push({
+      id: crypto.randomUUID(),
+      taskId,
+      taskTitle: taskTitle || "Untitled Task",
+      estimatedMinutes: Math.max(1, toSafeNumber(estimatedMinutes, 10)),
+      completedAt: completedAt || new Date().toISOString(),
+    });
+    writeStatsData(data);
+  }
+
+  res.json(computeStats(data));
+});
+
+app.post("/api/stats/distraction", (req, res) => {
+  const { appName, source, minutes, timestamp } = req.body ?? {};
+  const safeMinutes = Math.max(1, toSafeNumber(minutes, 1));
+  const data = readStatsData();
+
+  data.distractionEvents.push({
+    id: crypto.randomUUID(),
+    appName: appName || source || "Unknown",
+    minutes: safeMinutes,
+    timestamp: timestamp || new Date().toISOString(),
+  });
+
+  writeStatsData(data);
+  res.json(computeStats(data));
+});
+
 app.post("/api/breakdown", async (req, res) => {
   pruneOldContexts();
 

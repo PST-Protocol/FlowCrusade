@@ -10,12 +10,14 @@ import {
 } from 'lucide-react';
 
 
-export default function FocusDetailView({ t, theme, task, onComplete, onBack, onFurtherBreakdown, onRegenerate }) {
+export default function FocusDetailView({ t, theme, task, onComplete, onBack, onFurtherBreakdown, onRegenerate, onFocusSessionComplete }) {
   const initialMinutes = task?.estimatedMinutes || 25;
   const [selectedMinutes, setSelectedMinutes] = useState(initialMinutes);
   const [customMinutes, setCustomMinutes] = useState(String(initialMinutes));
   const [timeLeft, setTimeLeft] = useState(initialMinutes * 60);
   const [isActive, setIsActive] = useState(false);
+  const [focusedSeconds, setFocusedSeconds] = useState(0);
+  const [sessionStartedAt, setSessionStartedAt] = useState(null);
 
   useEffect(() => {
     const m = task?.estimatedMinutes || 25;
@@ -23,12 +25,17 @@ export default function FocusDetailView({ t, theme, task, onComplete, onBack, on
     setCustomMinutes(String(m));
     setTimeLeft(m * 60);
     setIsActive(false);
+    setFocusedSeconds(0);
+    setSessionStartedAt(null);
   }, [task?.id]);
 
   useEffect(() => {
     let interval = null;
     if (isActive && timeLeft > 0) {
-      interval = setInterval(() => setTimeLeft(prev => prev - 1), 1000);
+      interval = setInterval(() => {
+        setTimeLeft(prev => prev - 1);
+        setFocusedSeconds(prev => prev + 1);
+      }, 1000);
     } else if (timeLeft === 0) {
       setIsActive(false);
     }
@@ -41,18 +48,47 @@ export default function FocusDetailView({ t, theme, task, onComplete, onBack, on
     setCustomMinutes(String(safeMinutes));
     setIsActive(false);
     setTimeLeft(safeMinutes * 60);
+    setFocusedSeconds(0);
+    setSessionStartedAt(null);
   };
 
   const applyCustomMinutes = () => {
     updateMinutes(customMinutes);
   };
 
-  const toggleTimer = () => setIsActive(!isActive);
+  const toggleTimer = () => {
+    if (!isActive && !sessionStartedAt) {
+      setSessionStartedAt(new Date().toISOString());
+    }
+    setIsActive(!isActive);
+  };
   const resetTimer = () => {
     setIsActive(false);
     setTimeLeft(selectedMinutes * 60);
+    setFocusedSeconds(0);
+    setSessionStartedAt(null);
   };
   const formatTime = (s) => `${Math.floor(s / 60).toString().padStart(2, '0')}:${(s % 60).toString().padStart(2, '0')}`;
+
+  const handleComplete = async () => {
+    setIsActive(false);
+
+    const elapsedSeconds = focusedSeconds > 0
+      ? focusedSeconds
+      : Math.max(0, selectedMinutes * 60 - timeLeft);
+    const minutes = elapsedSeconds > 0 ? Math.max(1, Math.round(elapsedSeconds / 60)) : 0;
+
+    if (minutes > 0) {
+      await onFocusSessionComplete?.({
+        task,
+        minutes,
+        startedAt: sessionStartedAt || new Date().toISOString(),
+        endedAt: new Date().toISOString(),
+      });
+    }
+
+    onComplete?.(task);
+  };
 
   return (
     <div className="flex-1 flex flex-col max-w-3xl mx-auto w-full animate-fade-in relative pt-2">
@@ -144,7 +180,7 @@ export default function FocusDetailView({ t, theme, task, onComplete, onBack, on
             <button onClick={onRegenerate} className="px-6 py-3 rounded-xl bg-amber-50 border border-amber-200 text-amber-700 font-bold hover:bg-amber-100 transition-colors flex items-center justify-center gap-2 w-full">
               <RefreshCw className="w-5 h-5" /> Regenerate
             </button>
-            <button onClick={onComplete} className="px-6 py-3 rounded-xl bg-emerald-500/10 border border-emerald-500/20 text-emerald-500 font-bold hover:bg-emerald-500/20 transition-colors flex items-center justify-center gap-2 w-full">
+            <button onClick={handleComplete} className="px-6 py-3 rounded-xl bg-emerald-500/10 border border-emerald-500/20 text-emerald-500 font-bold hover:bg-emerald-500/20 transition-colors flex items-center justify-center gap-2 w-full">
               <CheckCircle className="w-5 h-5" /> Mark Completed
             </button>
           </div>

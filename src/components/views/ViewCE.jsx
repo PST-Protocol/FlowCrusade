@@ -12,7 +12,7 @@ import {
 import CollapsibleText from '../common/CollapsibleText';
 import FocusDetailView from './FocusDetailView';
 
-export default function ViewCE({ t, theme, rootTask, path, onBreakdown, onRegenerate, onOpenNode, showToast }) {
+export default function ViewCE({ t, theme, rootTask, path, onBreakdown, onRegenerate, onOpenNode, showToast, onTaskComplete, onFocusSessionComplete }) {
   const [focusingSubtask, setFocusingSubtask] = useState(null);
 
   let currentContext = rootTask;
@@ -37,7 +37,12 @@ export default function ViewCE({ t, theme, rootTask, path, onBreakdown, onRegene
         theme={theme}
         task={activeSubtask}
         onBack={() => setFocusingSubtask(null)}
-        onComplete={() => { showToast('Subtask Completed!', 'success'); setFocusingSubtask(null); }}
+        onFocusSessionComplete={onFocusSessionComplete}
+        onComplete={(completedTask) => {
+          onTaskComplete?.(completedTask || activeSubtask);
+          showToast('Subtask Completed!', 'success');
+          setFocusingSubtask(null);
+        }}
         onFurtherBreakdown={() => { setFocusingSubtask(null); onBreakdown(activeSubtask.id); }}
         onRegenerate={() => { setFocusingSubtask(null); onRegenerate(activeSubtask.id); }}
       />

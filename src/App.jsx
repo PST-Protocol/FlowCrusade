@@ -12,6 +12,7 @@ import { loadEvents, loadTasks, loadNotes, loadHistory, loadSettings } from './u
 import { stripExtension, fileToBase64 } from './utils/file';
 import { findNodeById, updateNodeById } from './utils/taskTree';
 import { postBreakdownRequest } from './services/breakdownApi';
+import { fetchStats, recordFocusSession, recordCompletedTask, recordDistraction } from './services/statsApi';
 import './styles/runtimeAnimations';
 
 import ViewA from './components/views/ViewA';
@@ -33,7 +34,7 @@ export default function FlowCrusadeApp() {
   const [activeTaskId, setActiveTaskId] = useState(null); // Which root task is active
   const [path, setPath] = useState([]); // Subtask drill-down path: [taskId, subtaskId, ...]
   
-  const [stats, setStats] = useState(INITIAL_STATS);
+  const [stats, setStats] = useState({ ...INITIAL_STATS, focusTimeToday: 0, sessions: 0, avgSession: 0, completionRate: 0, distractCount: 0, distractTime: 0, taskCompletionMinutes: 0, weightedCredit: 0, focusScore: 0 });
   const [events, setEvents] = useState(loadEvents);
   const [historyRecords, setHistoryRecords] = useState(loadHistory);
 
@@ -70,6 +71,15 @@ export default function FlowCrusadeApp() {
 
   // Sync settings theme to state
   useEffect(() => { setTheme(settings.theme); }, [settings.theme]);
+
+  // Load real stats from the local backend. If the server is off, the UI still works with local fallback values.
+  useEffect(() => {
+    fetchStats()
+      .then((serverStats) => setStats((prev) => ({ ...prev, ...serverStats })))
+      .catch(() => {
+        // Keep the app usable when only the Vite frontend is running.
+      });
+  }, []);
 
   // Settings + task breakdown history are persisted locally.
   useEffect(() => {
@@ -172,17 +182,78 @@ export default function FlowCrusadeApp() {
     return Math.max(own, childTotal, 10);
   };
 
-  const addCompletedTaskCredit = (task) => {
-    const minutes = getTaskEstimatedMinutes(task);
+  const mergeStatsFallback = (patch = {}) => {
     setStats(prev => {
-      const taskCompletionMinutes = (prev.taskCompletionMinutes || 0) + minutes;
-      const weightedCredit = Math.round((prev.focusTimeToday || 0) * 0.6 + taskCompletionMinutes * 0.4);
-      return {
-        ...prev,
-        taskCompletionMinutes,
-        focusScore: weightedCredit,
-      };
+      const next = { ...prev, ...patch };
+      const weightedCredit = Math.round((next.focusTimeToday || 0) * 0.6 + (next.taskCompletionMinutes || 0) * 0.4);
+      return { ...next, weightedCredit, focusScore: weightedCredit };
     });
+  };
+
+  const markTaskDoneLocally = (taskToComplete) => {
+    if (!taskToComplete?.id) return;
+
+    setTasks(prev => prev.map(root => {
+      if (root.id === taskToComplete.id) {
+        return { ...root, status: 'done', progress: 100, completedAt: new Date().toISOString() };
+      }
+
+      const existsInChildren = findNodeById(root.children || [], taskToComplete.id);
+      if (!existsInChildren) return root;
+
+      return {
+        ...root,
+        children: updateNodeById(root.children || [], taskToComplete.id, node => ({
+          ...node,
+          status: 'done',
+          progress: 100,
+          completedAt: new Date().toISOString(),
+        })),
+      };
+    }));
+  };
+
+  const handleFocusSessionComplete = async ({ task, minutes, startedAt, endedAt }) => {
+    if (!task?.id || !minutes) return;
+
+    try {
+      const updatedStats = await recordFocusSession({
+        taskId: task.id,
+        taskTitle: task.title,
+        minutes,
+        startedAt,
+        endedAt,
+      });
+      setStats(prev => ({ ...prev, ...updatedStats }));
+    } catch (error) {
+      mergeStatsFallback({
+        focusTimeToday: (stats.focusTimeToday || 0) + minutes,
+        sessions: (stats.sessions || 0) + 1,
+      });
+      showToast('Backend stats save failed, using local fallback.', 'warning');
+    }
+  };
+
+  const handleTaskComplete = async (taskToComplete) => {
+    if (!taskToComplete?.id) return;
+
+    markTaskDoneLocally(taskToComplete);
+    const minutes = getTaskEstimatedMinutes(taskToComplete);
+
+    try {
+      const updatedStats = await recordCompletedTask({
+        taskId: taskToComplete.id,
+        taskTitle: taskToComplete.title,
+        estimatedMinutes: minutes,
+        completedAt: new Date().toISOString(),
+      });
+      setStats(prev => ({ ...prev, ...updatedStats }));
+    } catch (error) {
+      mergeStatsFallback({
+        taskCompletionMinutes: (stats.taskCompletionMinutes || 0) + minutes,
+      });
+      showToast('Backend completion save failed, using local fallback.', 'warning');
+    }
   };
 
   const updateTaskDate = (taskId, date) => {
@@ -211,7 +282,7 @@ export default function FlowCrusadeApp() {
       tk.id === taskId ? { ...tk, status: tk.status === 'done' ? 'pending' : 'done', progress: tk.status === 'done' ? 0 : 100 } : tk
     ));
 
-    if (willComplete && target) addCompletedTaskCredit(target);
+    if (willComplete && target) handleTaskComplete(target);
   };
 
   const buildRootContextPayload = (root) => ({
@@ -528,15 +599,26 @@ export default function FlowCrusadeApp() {
     setIsFocusedMode(false);
   };
 
-  const handleSimulateDistraction = (source = 'Reddit') => {
+  const handleSimulateDistraction = async (source = 'Reddit') => {
     const time = new Date().toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
+    const timestamp = new Date().toISOString();
     const durationMins = Math.max(1, Number(settings.distractThreshold) || 2);
-    setEvents([{ id: Date.now(), time, timestamp: new Date().toISOString(), type: 'distract', desc: `Distracted → ${source} (${durationMins}m)`, source, durationMins }, ...events]);
-    setStats(prev => ({
-      ...prev,
-      distractCount: prev.distractCount + 1,
-      distractTime: prev.distractTime + durationMins
-    }));
+    setEvents([{ id: Date.now(), time, timestamp, type: 'distract', desc: `Distracted → ${source} (${durationMins}m)`, source, durationMins }, ...events]);
+
+    try {
+      const updatedStats = await recordDistraction({ appName: source, minutes: durationMins, timestamp });
+      setStats(prev => ({ ...prev, ...updatedStats }));
+    } catch (error) {
+      setStats(prev => ({
+        ...prev,
+        distractCount: (prev.distractCount || 0) + 1,
+        distractTime: (prev.distractTime || 0) + durationMins,
+        topDistractions: Array.from(new Set([source, ...(prev.topDistractions || [])])).slice(0, 3),
+      }));
+      showToast('Backend distraction save failed, using local fallback.', 'warning');
+      return;
+    }
+
     showToast(`Distraction: ${source}`, 'warning');
   };
 
@@ -759,6 +841,8 @@ export default function FlowCrusadeApp() {
               onRegenerate={handleRegenerate}
               onOpenNode={handleOpenNode}
               showToast={showToast}
+              onTaskComplete={handleTaskComplete}
+              onFocusSessionComplete={handleFocusSessionComplete}
             />
           )}
         </div>
