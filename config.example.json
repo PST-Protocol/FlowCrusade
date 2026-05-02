@@ -1,0 +1,8 @@
+{
+  "port": 8787,
+  "geminiApiKey": "paste_your_key_here",
+  "database": {
+    "provider": "localStorage",
+    "path": "browser"
+  }
+}

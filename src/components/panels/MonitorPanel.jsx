@@ -15,7 +15,9 @@ export default function MonitorPanel({ t, theme, events, onSimulate, onAddFocus,
   const sources = ['Instagram', 'TikTok', 'Reddit', 'YouTube', 'Email', 'Twitter/X', 'Other'];
 
   const focusCount = events.filter(e => e.type === 'focus').length;
-  const distractCount = events.filter(e => e.type === 'distract').length;
+  const distractEvents = events.filter(e => e.type === 'distract');
+  const distractCount = distractEvents.length;
+  const totalDistractMins = distractEvents.reduce((sum, e) => sum + (Number(e.durationMins) || Number(e.desc?.match(/\((\d+)m\)/)?.[1]) || 1), 0);
   const isDistracted = events[0]?.type === 'distract';
 
   // Top distraction sources
@@ -51,10 +53,10 @@ export default function MonitorPanel({ t, theme, events, onSimulate, onAddFocus,
           <p className={`text-[10px] ${t.textMuted}`}>Distractions</p>
         </div>
         <div className={`p-3 rounded-xl border text-center ${t.bgCard} ${t.border}`}>
-          <p className={`text-lg font-bold ${distractCount === 0 ? 'text-emerald-500' : distractCount <= 3 ? 'text-amber-500' : 'text-rose-500'}`}>
-            {distractCount === 0 ? 'A+' : distractCount <= 2 ? 'A' : distractCount <= 4 ? 'B' : 'C'}
+          <p className={`text-lg font-bold ${totalDistractMins <= 5 ? 'text-emerald-500' : totalDistractMins <= 20 ? 'text-amber-500' : 'text-rose-500'}`}>
+            {totalDistractMins}m
           </p>
-          <p className={`text-[10px] ${t.textMuted}`}>Score</p>
+          <p className={`text-[10px] ${t.textMuted}`}>Lost</p>
         </div>
       </div>
 
@@ -108,18 +110,19 @@ export default function MonitorPanel({ t, theme, events, onSimulate, onAddFocus,
           <p className={`text-sm ${t.textMuted}`}>No activity yet.</p>
         ) : (
           <div className={`relative`}>
-            {/* 竖线放在右侧 70% 位置 */}
-            <div className={`absolute top-0 bottom-0 w-0.5 ${theme === 'dark' ? 'bg-white/10' : 'bg-slate-200'}`} style={{left: '70%'}} />
+            <div className={`absolute top-0 bottom-0 w-0.5 ${theme === 'dark' ? 'bg-white/10' : 'bg-slate-200'}`} style={{left: '50%'}} />
             {events.map(ev => {
               const isFocus = ev.type === 'focus';
+              const duration = Number(ev.durationMins) || Number(ev.desc?.match(/\((\d+)m\)/)?.[1]) || 1;
+              const cardWidth = isFocus ? 62 : Math.min(82, Math.max(42, 34 + duration * 4));
+              const cardHeight = isFocus ? 0 : Math.min(120, Math.max(0, duration * 6));
               return (
                 <div key={ev.id} className="relative mb-4 group">
                   {/* Dot on the line */}
-                  <div className={`absolute top-4 w-4 h-4 rounded-full border-[3px] z-10 -translate-x-1/2 ${isFocus ? 'bg-emerald-500' : 'bg-rose-500'} ${theme === 'dark' ? 'border-[#161920]' : 'border-white'}`} style={{left: '70%'}} />
+                  <div className={`absolute top-4 w-4 h-4 rounded-full border-[3px] z-10 -translate-x-1/2 ${isFocus ? 'bg-emerald-500' : 'bg-rose-500'} ${theme === 'dark' ? 'border-[#161920]' : 'border-white'}`} style={{left: '50%'}} />
                   
                   {isFocus ? (
-                    /* Focus: 卡片居中在线附近 */
-                    <div className={`ml-[15%] mr-[5%] p-3 rounded-xl border shadow-sm ${t.bgCard} ${t.border} border-emerald-500/20`}>
+                    <div className={`ml-[56%] p-3 rounded-xl border shadow-sm ${t.bgCard} ${t.border} border-emerald-500/20`} style={{ width: `${cardWidth}%` }}>
                       <div className="flex items-center justify-between mb-1">
                         <span className="font-bold text-xs text-emerald-500">Focus</span>
                         <span className={`text-[10px] font-bold ${t.textMuted}`}>{ev.time}</span>
@@ -127,10 +130,9 @@ export default function MonitorPanel({ t, theme, events, onSimulate, onAddFocus,
                       <p className={`text-xs ${t.textMain}`}>{ev.desc}</p>
                     </div>
                   ) : (
-                    /* Distraction: 卡片偏到最左边，远离线 */
-                    <div className={`mr-[38%] p-3 rounded-xl border shadow-sm ${t.bgCard} ${t.border} border-rose-500/20`}>
+                    <div className={`p-3 rounded-xl border shadow-sm ${t.bgCard} ${t.border} border-rose-500/20`} style={{ width: `${cardWidth}%`, minHeight: `${48 + cardHeight}px`, marginLeft: `${Math.max(0, 48 - cardWidth)}%` }}>
                       <div className="flex items-center justify-between mb-1">
-                        <span className="font-bold text-xs text-rose-400">Alert</span>
+                        <span className="font-bold text-xs text-rose-400">Alert · {duration}m</span>
                         <span className={`text-[10px] font-bold ${t.textMuted}`}>{ev.time}</span>
                       </div>
                       <p className={`text-xs ${t.textMain}`}>{ev.desc}</p>

@@ -8,7 +8,7 @@ import {
 import { THEMES } from './data/themes';
 import { INITIAL_STATS } from './data/initialData';
 import { getLevelForMinutes, getRewardBounds, clamp01, formatMins } from './data/rewards';
-import { loadEvents, loadTasks, loadNotes } from './utils/storage';
+import { loadEvents, loadTasks, loadNotes, loadHistory, loadSettings } from './utils/storage';
 import { stripExtension, fileToBase64 } from './utils/file';
 import { findNodeById, updateNodeById } from './utils/taskTree';
 import { postBreakdownRequest } from './services/breakdownApi';
@@ -35,6 +35,7 @@ export default function FlowCrusadeApp() {
   
   const [stats, setStats] = useState(INITIAL_STATS);
   const [events, setEvents] = useState(loadEvents);
+  const [historyRecords, setHistoryRecords] = useState(loadHistory);
 
   // Monitor Events: 每次变化自动保存
   useEffect(() => {
@@ -56,13 +57,7 @@ export default function FlowCrusadeApp() {
   useEffect(() => {
     localStorage.setItem('fc_notes', JSON.stringify(notes));
   }, [notes]);
-  const [settings, setSettings] = useState({
-    theme: 'light',
-    monitorEnabled: true,
-    distractThreshold: 5,
-    storagePath: 'Browser-managed uploads',
-    notifications: true
-  });
+  const [settings, setSettings] = useState(loadSettings);
 
   // UI States
   const [activePanel, setActivePanel] = useState(null); // 'calendar'|'stats'|'monitor'|'settings'
@@ -75,6 +70,34 @@ export default function FlowCrusadeApp() {
 
   // Sync settings theme to state
   useEffect(() => { setTheme(settings.theme); }, [settings.theme]);
+
+  // Settings + task breakdown history are persisted locally.
+  useEffect(() => {
+    localStorage.setItem('fc_settings', JSON.stringify(settings));
+  }, [settings]);
+
+  useEffect(() => {
+    localStorage.setItem('fc_task_history', JSON.stringify(historyRecords));
+  }, [historyRecords]);
+
+  useEffect(() => {
+    const records = tasks
+      .filter(task => task.children?.length || task.sourceContext?.contextId)
+      .map(task => ({
+        id: task.id,
+        title: task.title,
+        date: task.date || '',
+        hasDueDate: Boolean(task.date),
+        breakdownCount: task.children?.length || 0,
+        updatedAt: new Date().toISOString(),
+      }));
+
+    setHistoryRecords(prev => {
+      const merged = new Map(prev.map(record => [record.id, record]));
+      records.forEach(record => merged.set(record.id, { ...(merged.get(record.id) || {}), ...record }));
+      return Array.from(merged.values());
+    });
+  }, [tasks]);
 
   // Rewards + level are measured in "focus minutes" (demo).
   const rewardBounds = getRewardBounds(stats.focusScore);
@@ -142,6 +165,38 @@ export default function FlowCrusadeApp() {
     return newTask;
   };
 
+  const getTaskEstimatedMinutes = (task) => {
+    if (!task) return 0;
+    const own = Number(task.estimatedMinutes) || 0;
+    const childTotal = (task.children || []).reduce((sum, child) => sum + getTaskEstimatedMinutes(child), 0);
+    return Math.max(own, childTotal, 10);
+  };
+
+  const addCompletedTaskCredit = (task) => {
+    const minutes = getTaskEstimatedMinutes(task);
+    setStats(prev => {
+      const taskCompletionMinutes = (prev.taskCompletionMinutes || 0) + minutes;
+      const weightedCredit = Math.round((prev.focusTimeToday || 0) * 0.6 + taskCompletionMinutes * 0.4);
+      return {
+        ...prev,
+        taskCompletionMinutes,
+        focusScore: weightedCredit,
+      };
+    });
+  };
+
+  const updateTaskDate = (taskId, date) => {
+    setTasks(prev => prev.map(task => task.id === taskId ? { ...task, date: date || '' } : task));
+    setHistoryRecords(prev => prev.map(record => record.id === taskId ? { ...record, date: date || '', hasDueDate: Boolean(date), updatedAt: new Date().toISOString() } : record));
+  };
+
+  const selectTaskFromCalendar = (id) => {
+    const task = tasks.find(t => t.id === id);
+    setActiveTaskId(id);
+    setPath(task?.children?.length ? [id] : []);
+    setIsFocusedMode(false);
+  };
+
   const deleteTask = (taskId) => {
     setTasks(tasks.filter(tk => tk.id !== taskId));
     if (activeTaskId === taskId) setActiveTaskId(null);
@@ -149,9 +204,14 @@ export default function FlowCrusadeApp() {
   };
 
   const toggleTask = (taskId) => {
-    setTasks(tasks.map(tk => 
+    const target = tasks.find(tk => tk.id === taskId);
+    const willComplete = target?.status !== 'done';
+
+    setTasks(tasks.map(tk =>
       tk.id === taskId ? { ...tk, status: tk.status === 'done' ? 'pending' : 'done', progress: tk.status === 'done' ? 0 : 100 } : tk
     ));
+
+    if (willComplete && target) addCompletedTaskCredit(target);
   };
 
   const buildRootContextPayload = (root) => ({
@@ -275,7 +335,7 @@ export default function FlowCrusadeApp() {
         title: result.rootTitle || trimmedInput || stripExtension(composerFile?.name || 'Uploaded Task'),
         progress: 0,
         status: 'pending',
-        date: new Date().toISOString().split('T')[0],
+        date: '',
         desc: result.rootDescription || trimmedInput || 'No description provided.',
         children: convertAiStepsToChildren(result.steps || [], newTaskId, result.source || 'ai'),
         sourceContext: {
@@ -470,18 +530,19 @@ export default function FlowCrusadeApp() {
 
   const handleSimulateDistraction = (source = 'Reddit') => {
     const time = new Date().toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
-    setEvents([{ id: Date.now(), time, type: 'distract', desc: `Distracted → ${source}`, source }, ...events]);
+    const durationMins = Math.max(1, Number(settings.distractThreshold) || 2);
+    setEvents([{ id: Date.now(), time, timestamp: new Date().toISOString(), type: 'distract', desc: `Distracted → ${source} (${durationMins}m)`, source, durationMins }, ...events]);
     setStats(prev => ({
       ...prev,
       distractCount: prev.distractCount + 1,
-      distractTime: prev.distractTime + 2
+      distractTime: prev.distractTime + durationMins
     }));
     showToast(`Distraction: ${source}`, 'warning');
   };
 
   const addFocusEvent = () => {
     const time = new Date().toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
-    setEvents([{ id: Date.now(), time, type: 'focus', desc: 'Back to Focus' }, ...events]);
+    setEvents([{ id: Date.now(), time, timestamp: new Date().toISOString(), type: 'focus', desc: 'Back to Focus' }, ...events]);
     showToast('Back to focus!');
   };
 
@@ -585,10 +646,12 @@ export default function FlowCrusadeApp() {
         onAddFocusEvent={addFocusEvent}
         onDeleteEvent={deleteEvent}
         onClearEvents={clearAllEvents}
-        onSelectTask={(id) => { setActiveTaskId(id); setPath([]); setIsFocusedMode(false); }}
+        onSelectTask={selectTaskFromCalendar}
         onCreateTask={(title, date) => createNewTask(title, date)}
+        onUpdateTaskDate={updateTaskDate}
         onDeleteTask={deleteTask}
         onToggleTask={toggleTask}
+        historyRecords={historyRecords}
         activeTaskId={activeTaskId}
         showToast={showToast}
       />

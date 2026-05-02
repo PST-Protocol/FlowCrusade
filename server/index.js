@@ -16,7 +16,6 @@ import JSZip from "jszip";
 dotenv.config();
 
 const app = express();
-const PORT = process.env.PORT || 8787;
 const contextStore = new Map();
 const CONTEXT_TTL_MS = 1000 * 60 * 60 * 6;
 const execFileAsync = promisify(execFile);
@@ -82,6 +81,20 @@ function ensureDirectorySync(dirPath) {
 
 ensureDirectorySync(LOG_DIR);
 ensureDirectorySync(TEMP_ROOT_DIR);
+
+function readLocalConfig() {
+  const configPath = path.join(__dirname, "..", "config.json");
+  try {
+    if (!fs.existsSync(configPath)) return {};
+    return JSON.parse(fs.readFileSync(configPath, "utf8"));
+  } catch (error) {
+    writeLog("error", "config.read.failed", { error: error.message });
+    return {};
+  }
+}
+
+const LOCAL_CONFIG = readLocalConfig();
+const PORT = process.env.PORT || LOCAL_CONFIG.port || 8787;
 
 app.use(cors());
 app.use(express.json({ limit: "120mb" }));
@@ -232,6 +245,8 @@ function getGeminiApiKey() {
     process.env.GEMINI_API_KEY ||
     process.env.GOOGLE_API_KEY ||
     process.env.API_KEY ||
+    LOCAL_CONFIG.geminiApiKey ||
+    LOCAL_CONFIG.llmApiKey ||
     ""
   ).trim();
 }

@@ -9,7 +9,7 @@ import {
   Menu, PanelLeftClose
 } from 'lucide-react';
 
-import { getLevelForMinutes, getRewardBounds, clamp01, formatMins } from '../../data/rewards';
+import { LEVELS, getLevelForMinutes, getRewardBounds, clamp01, formatMins } from '../../data/rewards';
 
 export default function StatsPanel({ t, theme, stats }) {
   const [tab, setTab] = useState('overview'); // 'overview' | 'ranking'
@@ -20,6 +20,9 @@ export default function StatsPanel({ t, theme, stats }) {
   const level = useMemo(() => getLevelForMinutes(stats.focusScore), [stats.focusScore]);
   const rewardBounds = useMemo(() => getRewardBounds(stats.focusScore), [stats.focusScore]);
   const progressToNextReward = useMemo(() => clamp01((stats.focusScore - rewardBounds.prev) / (rewardBounds.next - rewardBounds.prev)), [stats.focusScore, rewardBounds]);
+
+  const weightedCredit = stats.weightedCredit ?? stats.focusScore;
+  const taskCompletionMinutes = stats.taskCompletionMinutes || 0;
 
   const coach = useMemo(() => {
     const focus = stats.focusTimeToday;
@@ -160,7 +163,7 @@ export default function StatsPanel({ t, theme, stats }) {
               <div className="flex items-end justify-between gap-4">
                 <div>
                   <p className={`text-4xl font-black tracking-tight ${t.textMain}`}>{formatMins(stats.focusScore)}</p>
-                  <p className={`text-xs mt-1 ${t.textMuted}`}>All scoring is measured in focus minutes</p>
+                  <p className={`text-xs mt-1 ${t.textMuted}`}>Credit = 60% focus duration + 40% completed-task duration</p>
                 </div>
                 <div className="text-right">
                   <p className={`text-xs font-bold ${t.textMuted}`}>Level</p>
@@ -184,9 +187,15 @@ export default function StatsPanel({ t, theme, stats }) {
           {/* Core Stats */}
           <div className="grid grid-cols-2 gap-4">
             <StatBox t={t} title="Focus time today" value={`${stats.focusTimeToday}m`} />
+            <StatBox t={t} title="Task time completed" value={`${taskCompletionMinutes}m`} />
+            <StatBox t={t} title="Weighted credit" value={`${weightedCredit}m`} />
             <StatBox t={t} title="Sessions" value={stats.sessions} />
             <StatBox t={t} title="Avg session" value={`${stats.avgSession}m`} />
             <StatBox t={t} title="Streak" value={`${stats.streak} days`} />
+          </div>
+
+          <div className={`p-4 rounded-xl border text-xs leading-relaxed ${t.bgCard} ${t.border} ${t.textMuted}`}>
+            <span className={`font-bold ${t.textMain}`}>Credit formula:</span> ({stats.focusTimeToday}m × 0.6) + ({taskCompletionMinutes}m × 0.4) = <span className="font-bold text-indigo-400">{weightedCredit}m</span>.
           </div>
 
           {/* Completion & Distraction */}

@@ -1,12 +1,6 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { 
-  Calendar as CalendarIcon, BarChart2, Activity, Plus, Mic, Send, 
-  ChevronRight, Home, CheckCircle, Clock, RefreshCw, 
-  X, Edit3, Trash2, Zap, Play, Pause, RotateCcw,
-  Paperclip, ArrowLeft, Settings as SettingsIcon,
-  Moon, Sun, Bell, Database, Key, ShieldAlert,
-  ChevronDown, ChevronUp, ChevronLeft, Users, MapPin, Trophy, Ticket,
-  Menu, PanelLeftClose
+Calendar as CalendarIcon, Moon, Sun, Bell
 } from 'lucide-react';
 
 
@@ -75,21 +69,12 @@ export default function SettingsPanel({ t, settings, setSettings, showToast }) {
         </div>
       </div>
 
-      {/* Data & API */}
-      <div>
-        <h4 className={`font-bold text-xs uppercase tracking-wider mb-3 mt-8 ${t.textMuted}`}>Developer & Data</h4>
-        <div className="space-y-4">
-           <div>
-             <label className={`block text-xs mb-2 flex items-center gap-2 ${t.textMuted}`}><Database className="w-3 h-3"/> Local Storage Path</label>
-             <input type="text" value={settings.storagePath} onChange={(e) => handleChange('storagePath', e.target.value)} className={`w-full px-3 py-2 rounded-lg border text-xs focus:outline-none focus:border-indigo-500 ${t.bgInput} ${t.border} ${t.textMain}`} />
-           </div>
-           <div>
-             <label className={`block text-xs mb-2 flex items-center gap-2 ${t.textMuted}`}><Key className="w-3 h-3"/> Gemini API Key Source</label>
-             <div className={`w-full px-3 py-2 rounded-lg border text-xs ${t.bgInput} ${t.border} ${t.textMain}`}>
-               Server-managed via environment variables (`GEMINI_API_KEY`, `GOOGLE_API_KEY`, or `API_KEY`).
-             </div>
-           </div>
-        </div>
+      {/* Local config note */}
+      <div className={`p-4 rounded-xl border ${t.bgCard} ${t.border}`}>
+        <h4 className={`font-bold text-xs uppercase tracking-wider mb-2 ${t.textMuted}`}>Local Config</h4>
+        <p className={`text-xs leading-relaxed ${t.textMuted}`}>
+          Developer/data controls were removed from the UI. To change database or LLM API settings, edit the local <code className="px-1 py-0.5 rounded bg-black/10">config.json</code> file instead of storing those settings in the app screen.
+        </p>
       </div>
 
       {/* About */}

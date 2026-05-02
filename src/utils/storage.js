@@ -23,3 +23,25 @@ export function loadNotes() {
   } catch (e) { /* ignore */ }
   return DEFAULT_NOTES;
 }
+
+
+export function loadHistory() {
+  try {
+    const saved = localStorage.getItem('fc_task_history');
+    if (saved) return JSON.parse(saved);
+  } catch (e) { /* ignore */ }
+  return [];
+}
+
+export function loadSettings() {
+  try {
+    const saved = localStorage.getItem('fc_settings');
+    if (saved) return JSON.parse(saved);
+  } catch (e) { /* ignore */ }
+  return {
+    theme: 'light',
+    monitorEnabled: true,
+    distractThreshold: 5,
+    notifications: true
+  };
+}
