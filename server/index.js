@@ -18,6 +18,7 @@ import {
 import monitorRouter from "./monitor/routes.js";
 import { recoverCrashedSessions } from "./monitor/store.js";
 import { startHeartbeat } from "./monitor/stream.js";
+import { maybeStartMonitorAgent } from "./monitor/agent.js";
 
 dotenv.config();
 
@@ -1449,7 +1450,11 @@ app.post("/api/breakdown", async (req, res) => {
 app.listen(PORT, () => {
   recoverCrashedSessions();
   startHeartbeat();
+  const agent = maybeStartMonitorAgent({ apiBase: `http://localhost:${PORT}` });
   console.log(`🚀 AI server running at http://localhost:${PORT}`);
   console.log(`🔐 Gemini API key source: ${hasGeminiApiKey() ? "environment loaded" : "missing"}`);
   console.log(`📝 Request logs: ${LOG_DIR}`);
+  if (agent.started) {
+    console.log(`🖥️  Monitor agent restored for active session.`);
+  }
 });

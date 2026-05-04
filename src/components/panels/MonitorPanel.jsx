@@ -1,16 +1,57 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { ShieldAlert, Play, X, Wifi, WifiOff } from 'lucide-react';
+import { AlertTriangle, CheckCircle, ShieldAlert, Play, X, Wifi, WifiOff } from 'lucide-react';
 import {
   startMonitorSession,
   endMonitorSession,
   getActiveMonitorSession,
   postMonitorEvent,
   getSessionEvents,
+  getMonitorAgentStatus,
+  startMonitorAgent,
+  stopMonitorAgent,
   createMonitorSSE,
 } from '../../services/monitorApi';
 import { recordDistraction } from '../../services/statsApi';
 
 const DISTRACTION_SOURCES = ['Instagram', 'TikTok', 'Reddit', 'YouTube', 'Email', 'Twitter/X', 'Other'];
+
+function parseSsePayload(payload) {
+  try {
+    return JSON.parse(payload);
+  } catch {
+    return null;
+  }
+}
+
+function newestFirst(items = []) {
+  return [...items].sort((a, b) => new Date(b.timestamp || 0) - new Date(a.timestamp || 0));
+}
+
+function prependUniqueEvent(event) {
+  return (prev) => {
+    if (!event?.id) return prev;
+    if (prev.some((item) => item.id === event.id)) return prev;
+    return [event, ...prev];
+  };
+}
+
+function getDomainLabel(domain = '') {
+  const clean = domain.replace(/^www\./, '').trim();
+  if (!clean) return '';
+  const parts = clean.split('.').filter(Boolean);
+  if (parts.length >= 3 && parts.at(-2) === 'google') {
+    return parts.slice(-3, -1).join('.');
+  }
+  if (parts.length >= 2) return parts.at(-2);
+  return clean;
+}
+
+function getActivityLabel(event, fallback) {
+  if (event?.domain) {
+    return `${getDomainLabel(event.domain)} (web)`;
+  }
+  return event?.appName || event?.windowTitle || fallback;
+}
 
 export default function MonitorPanel({ t, theme, enabled, onToggle, showToast }) {
   const [session, setSession] = useState(null);
@@ -18,7 +59,19 @@ export default function MonitorPanel({ t, theme, enabled, onToggle, showToast })
   const [loading, setLoading] = useState(false);
   const [showPicker, setShowPicker] = useState(false);
   const [sseConnected, setSseConnected] = useState(false);
+  const [agentStatus, setAgentStatus] = useState(null);
   const sseRef = useRef(null);
+  const onToggleRef = useRef(onToggle);
+
+  useEffect(() => {
+    onToggleRef.current = onToggle;
+  }, [onToggle]);
+
+  const refreshAgentStatus = () => {
+    getMonitorAgentStatus()
+      .then(({ agent }) => setAgentStatus(agent))
+      .catch(() => setAgentStatus(null));
+  };
 
   // On mount: check for existing active session and load its events
   useEffect(() => {
@@ -26,10 +79,13 @@ export default function MonitorPanel({ t, theme, enabled, onToggle, showToast })
       .then(({ session: active }) => {
         if (active) {
           setSession(active);
-          return getSessionEvents(active.sessionId).then(({ events: evts }) => setEvents(evts || []));
+          return getSessionEvents(active.sessionId).then(({ events: evts }) => setEvents(newestFirst(evts || [])));
         }
       })
       .catch(() => {});
+
+    refreshAgentStatus();
+    const statusTimer = setInterval(refreshAgentStatus, 5000);
 
     // Connect to SSE stream
     const sse = createMonitorSSE();
@@ -37,34 +93,71 @@ export default function MonitorPanel({ t, theme, enabled, onToggle, showToast })
 
     sse.addEventListener('connected', () => setSseConnected(true));
     sse.addEventListener('monitor.heartbeat', () => setSseConnected(true));
-    sse.addEventListener('monitor.event', (e) => {
-      const event = JSON.parse(e.data);
-      setEvents((prev) => [event, ...prev]);
+    sse.addEventListener('monitor.session.started', (e) => {
+      const data = parseSsePayload(e.data);
+      if (data?.sessionId) {
+        setSession((prev) => prev || {
+          sessionId: data.sessionId,
+          mode: data.mode || 'standalone',
+          linkedTaskTitle: data.linkedTaskTitle || null,
+          startTime: data.startTime,
+          status: 'active',
+        });
+      }
     });
-    sse.addEventListener('monitor.session.ended', () => setSession(null));
+    sse.addEventListener('monitor.event', (e) => {
+      const event = parseSsePayload(e.data);
+      setEvents(prependUniqueEvent(event));
+    });
+    sse.addEventListener('monitor.session.ended', () => {
+      setSession(null);
+      onToggleRef.current(false);
+      stopMonitorAgent()
+        .then(({ agent }) => setAgentStatus(agent))
+        .catch(() => {});
+    });
+    sse.addEventListener('monitor.agent.status', (e) => {
+      const data = parseSsePayload(e.data);
+      if (data) setAgentStatus(data);
+    });
     sse.onerror = () => setSseConnected(false);
 
-    return () => sse.close();
+    return () => {
+      clearInterval(statusTimer);
+      sse.close();
+    };
   }, []);
 
   const handleToggle = async (turnOn) => {
     setLoading(true);
+    let startedSession = null;
     try {
       if (turnOn) {
         const { session: newSession } = await startMonitorSession({ mode: 'standalone' });
+        startedSession = newSession;
+        const { agent } = await startMonitorAgent();
         setSession(newSession);
+        setAgentStatus(agent);
         setEvents([]);
         onToggle(true);
-        showToast?.('Monitor session started');
+        showToast?.('Monitor session and desktop agent started');
       } else {
         if (session) {
           await endMonitorSession(session.sessionId);
           setSession(null);
         }
+        await stopMonitorAgent()
+          .then(({ agent }) => setAgentStatus(agent))
+          .catch((error) => showToast?.(`Agent stop warning: ${error.message}`, 'warning'));
         onToggle(false);
         showToast?.('Monitor session ended');
       }
     } catch (err) {
+      if (turnOn && startedSession?.sessionId) {
+        await endMonitorSession(startedSession.sessionId).catch(() => {});
+        setSession(null);
+        onToggle(false);
+      }
       showToast?.(`Monitor error: ${err.message}`, 'error');
     } finally {
       setLoading(false);
@@ -110,6 +203,15 @@ export default function MonitorPanel({ t, theme, enabled, onToggle, showToast })
   });
   const topSrc = Object.entries(srcMap).sort((a, b) => b[1] - a[1]).slice(0, 3);
   const isDistracted = events[0]?.classification === 'distraction';
+  const agentRunning = Boolean(agentStatus?.running);
+  const permissionIssue = agentStatus?.permissionIssue;
+  const monitorState = permissionIssue
+    ? 'Needs permission'
+    : session && agentRunning
+    ? 'Tracking'
+    : session
+    ? 'Session active · agent offline'
+    : 'Off';
 
   return (
     <div className="space-y-5 animate-fade-in">
@@ -125,8 +227,19 @@ export default function MonitorPanel({ t, theme, enabled, onToggle, showToast })
             )}
           </div>
           <p className={`text-[10px] mt-1 ${t.textMuted}`}>
-            {session ? `Session active · ${events.length} events` : 'Track off-screen activity'}
+            {monitorState} · {events.length} events
           </p>
+          {enabled && (
+            <div className="mt-2 flex flex-wrap items-center gap-2">
+              <span className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-bold ${session ? 'bg-emerald-500/10 text-emerald-500' : 'bg-slate-500/10 text-slate-400'}`}>
+                <CheckCircle className="w-3 h-3" /> Session
+              </span>
+              <span className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-bold ${agentRunning ? 'bg-emerald-500/10 text-emerald-500' : 'bg-amber-500/10 text-amber-500'}`}>
+                {agentRunning ? <CheckCircle className="w-3 h-3" /> : <AlertTriangle className="w-3 h-3" />}
+                {permissionIssue ? 'Needs Permission' : agentRunning ? 'Agent Running' : 'Agent Offline'}
+              </span>
+            </div>
+          )}
         </div>
         <button
           disabled={loading}
@@ -142,6 +255,18 @@ export default function MonitorPanel({ t, theme, enabled, onToggle, showToast })
           />
         </button>
       </div>
+
+      {permissionIssue && (
+        <div className="flex gap-2 rounded-xl border border-amber-500/30 bg-amber-500/10 p-3">
+          <AlertTriangle className="w-4 h-4 text-amber-500 shrink-0 mt-0.5" />
+          <div>
+            <p className="text-xs font-bold text-amber-500">macOS permission needed</p>
+            <p className={`text-[11px] leading-relaxed mt-1 ${t.textMuted}`}>
+              Grant Accessibility permission to Terminal, VS Code, Cursor, or Node in System Settings.
+            </p>
+          </div>
+        </div>
+      )}
 
       {/* Stats cards */}
       <div className="grid grid-cols-3 gap-2">
@@ -165,7 +290,7 @@ export default function MonitorPanel({ t, theme, enabled, onToggle, showToast })
           >
             {totalDistractMins}m
           </p>
-          <p className={`text-[10px] ${t.textMuted}`}>Lost</p>
+          <p className={`text-[10px] ${t.textMuted}`}>Distract Time</p>
         </div>
       </div>
 
@@ -257,6 +382,7 @@ export default function MonitorPanel({ t, theme, enabled, onToggle, showToast })
               const timeLabel = ev.timestamp
                 ? new Date(ev.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
                 : '';
+              const activityLabel = getActivityLabel(ev, isFocus ? 'Focus activity' : 'Distraction');
 
               return (
                 <div key={ev.id} className="relative mb-4 group">
@@ -275,7 +401,8 @@ export default function MonitorPanel({ t, theme, enabled, onToggle, showToast })
                         <span className="font-bold text-xs text-emerald-500">Focus</span>
                         <span className={`text-[10px] font-bold ${t.textMuted}`}>{timeLabel}</span>
                       </div>
-                      <p className={`text-xs ${t.textMain}`}>{ev.appName || ev.windowTitle || 'Focus activity'}</p>
+                      <p className={`text-xs ${t.textMain}`}>{activityLabel}</p>
+                      {ev.domain && <p className={`text-[10px] mt-0.5 truncate ${t.textMuted}`}>{ev.domain}</p>}
                     </div>
                   ) : (
                     <div
@@ -292,7 +419,8 @@ export default function MonitorPanel({ t, theme, enabled, onToggle, showToast })
                         </span>
                         <span className={`text-[10px] font-bold ${t.textMuted}`}>{timeLabel}</span>
                       </div>
-                      <p className={`text-xs ${t.textMain}`}>{ev.appName || ev.windowTitle || 'Distraction'}</p>
+                      <p className={`text-xs ${t.textMain}`}>{activityLabel}</p>
+                      {ev.domain && <p className={`text-[10px] mt-0.5 truncate ${t.textMuted}`}>{ev.domain}</p>}
                     </div>
                   )}
                   <button

@@ -1,9 +1,11 @@
 import { Router } from 'express';
 import { readPrivacyConfig, writePrivacyConfig, takePrivacySnapshot, isBlacklisted } from './privacy.js';
 import { classify } from './classifier.js';
+import { readClassificationConfig, writeClassificationConfig, resetClassificationConfig } from './classificationConfig.js';
 import { createSession, endSession, getActiveSession, updateSessionLastSeen, addMonitorEvent, getSessionEvents } from './store.js';
 import { writeDistractionIncrement, writeFocusIncrement } from './statsBridge.js';
 import { addClient, broadcast } from './stream.js';
+import { getAgentStatus, startMonitorAgent, stopMonitorAgent } from './agent.js';
 
 const router = Router();
 
@@ -45,6 +47,25 @@ router.post('/session/start', (req, res) => {
   });
 
   res.json({ session });
+});
+
+// Desktop monitor agent process
+router.get('/agent/status', (req, res) => {
+  res.json({ agent: getAgentStatus() });
+});
+
+router.post('/agent/start', (req, res) => {
+  const { apiBase } = req.body ?? {};
+  const requestBase = `${req.protocol}://${req.get('host') || 'localhost:8787'}`;
+  const agent = startMonitorAgent({ apiBase: apiBase || requestBase });
+  broadcast('monitor.agent.status', agent);
+  res.json({ agent });
+});
+
+router.post('/agent/stop', (req, res) => {
+  const agent = stopMonitorAgent();
+  broadcast('monitor.agent.status', agent);
+  res.json({ agent });
 });
 
 // End a session
@@ -141,6 +162,26 @@ router.post('/privacy/config', (req, res) => {
   };
   writePrivacyConfig(config);
   res.json(config);
+});
+
+// Classification config
+router.get('/classification/config', (req, res) => {
+  res.json(readClassificationConfig());
+});
+
+router.post('/classification/config', (req, res) => {
+  const { distractionApps, distractionDomains, focusApps, focusDomains } = req.body ?? {};
+  const config = writeClassificationConfig({
+    distractionApps: Array.isArray(distractionApps) ? distractionApps : [],
+    distractionDomains: Array.isArray(distractionDomains) ? distractionDomains : [],
+    focusApps: Array.isArray(focusApps) ? focusApps : [],
+    focusDomains: Array.isArray(focusDomains) ? focusDomains : [],
+  });
+  res.json(config);
+});
+
+router.post('/classification/config/reset', (req, res) => {
+  res.json(resetClassificationConfig());
 });
 
 export default router;

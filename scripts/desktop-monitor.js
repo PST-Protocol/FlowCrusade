@@ -5,7 +5,8 @@ const execFileAsync = promisify(execFile);
 
 const API_BASE = process.env.API_BASE || 'http://localhost:8787';
 const POLL_INTERVAL_MS = Number(process.env.POLL_INTERVAL_MS) || 15_000;
-const MIN_REPORT_SECONDS = 60;       // minimum stay before reporting
+const MIN_REPORT_SECONDS = Number(process.env.MIN_REPORT_SECONDS) || 10; // minimum stay before reporting
+const REPORT_CHUNK_SECONDS = Number(process.env.REPORT_CHUNK_SECONDS) || MIN_REPORT_SECONDS;
 const IDLE_BUFFER_SECONDS = 5 * 60; // stop accumulating after 5 min idle
 
 // ─── AppleScript helpers ────────────────────────────────────────────────────
@@ -115,7 +116,7 @@ async function postEvent({ sessionId, appName, windowTitle, domain, timestamp, d
 
 async function main() {
   console.log(`[monitor] Desktop monitor agent starting`);
-  console.log(`[monitor] API: ${API_BASE} | Poll: ${POLL_INTERVAL_MS / 1000}s | Min report: ${MIN_REPORT_SECONDS}s | Idle cap: ${IDLE_BUFFER_SECONDS / 60}min`);
+  console.log(`[monitor] API: ${API_BASE} | Poll: ${POLL_INTERVAL_MS / 1000}s | Min report: ${MIN_REPORT_SECONDS}s | Live chunk: ${REPORT_CHUNK_SECONDS}s | Idle cap: ${IDLE_BUFFER_SECONDS / 60}min`);
 
   let session = null;
   let currentWindow = null;   // { appName, windowTitle, domain }
@@ -222,6 +223,20 @@ async function main() {
       lastActiveAt = idleSeconds < IDLE_BUFFER_SECONDS ? now : null;
       const domainStr = win.domain ? ` [${win.domain}]` : '';
       console.log(`[monitor] → ${win.appName}${domainStr}`);
+      return;
+    }
+
+    // 6. Report long-running activity in live chunks even if the user never
+    // switches windows. Without this, the frontend only receives events on
+    // window changes or agent shutdown.
+    if (currentWindow && windowStartTime) {
+      const effectiveEnd = lastActiveAt || now;
+      const durationSeconds = Math.floor((effectiveEnd - windowStartTime) / 1000);
+      if (durationSeconds >= Math.max(MIN_REPORT_SECONDS, REPORT_CHUNK_SECONDS)) {
+        await reportWindow(currentWindow, windowStartTime, effectiveEnd);
+        windowStartTime = effectiveEnd;
+        lastActiveAt = idleSeconds < IDLE_BUFFER_SECONDS ? now : effectiveEnd;
+      }
     }
   }
 

@@ -8,7 +8,9 @@ FlowCrusade is a React/Vite productivity app that turns a high-level task into s
 - Displays task trees with root tasks, subtasks, and deeper child steps.
 - Supports task drill-down and focused subtask views.
 - Monitors the active macOS window in real time and classifies activity as focus or distraction.
-- Tracks focus minutes, distraction events, streaks, and peak focus hours — updated live via SSE.
+- Starts the macOS monitor agent from the Monitor UI and reports agent status.
+- Tracks focus minutes, distraction events, distract time, streaks, and peak focus hours — updated live via SSE.
+- Lets users edit focus/distraction app and domain rules from Settings.
 - Stores tasks and notes in `localStorage`; stats and monitor sessions are persisted server-side.
 - Uses a local Express server for AI task breakdowns and the activity monitor API.
 
@@ -24,12 +26,15 @@ FlowCrusade is a React/Vite productivity app that turns a high-level task into s
 │   ├── data/                     # Runtime JSON stores (git-ignored, auto-created)
 │   │   ├── stats.json
 │   │   ├── monitor.json
-│   │   └── privacy.json
+│   │   ├── privacy.json
+│   │   └── classification.json
 │   └── monitor/
 │       ├── routes.js             # /api/monitor REST endpoints
+│       ├── agent.js              # Starts/stops/status-checks the desktop monitor agent
 │       ├── store.js              # Session + event persistence, crash recovery
 │       ├── stream.js             # SSE broadcast to frontend
 │       ├── classifier.js         # Rule-based focus/distraction classifier
+│       ├── classificationConfig.js # Editable focus/distraction rules
 │       ├── privacy.js            # Privacy filter (blockedApps / domains / keywords)
 │       └── statsBridge.js        # Writes classified events to stats, broadcasts stats.updated
 ├── src/
@@ -70,8 +75,8 @@ FlowCrusade is a React/Vite productivity app that turns a high-level task into s
 - `LeftPanels.jsx` — chooses which left overlay panel is visible.
 - `CalendarPanel.jsx` — task calendar and manual task creation.
 - `StatsPanel.jsx` — focus score, rewards, leaderboard, and analytics.
-- `MonitorPanel.jsx` — real-time activity timeline connected to backend via SSE.
-- `SettingsPanel.jsx` — theme and monitor settings.
+- `MonitorPanel.jsx` — real-time activity timeline, Monitor session toggle, and agent status.
+- `SettingsPanel.jsx` — theme, preferences, and monitor classification rules.
 - `QuickNotesPanel.jsx` — local quick notes.
 
 ### Common components
@@ -89,7 +94,7 @@ npm install
 npm run dev
 ```
 
-Open the Vite URL printed in the terminal, usually `http://localhost:5173`.
+Open the Vite URL printed in the terminal, usually `http://localhost:5173`. If that port is occupied, Vite may use another port such as `http://localhost:5174`.
 
 ## Run the backend
 
@@ -109,21 +114,71 @@ The server runs on `http://localhost:8787` and exposes:
 - `GET  /api/monitor/stream` — SSE stream for real-time events
 - `POST /api/monitor/session/start` — start a monitor session
 - `POST /api/monitor/session/end` — end a monitor session
+- `GET  /api/monitor/session/active` — get the active monitor session
 - `POST /api/monitor/event` — receive a classified activity event
+- `GET  /api/monitor/events/:sessionId` — list events for a session
+- `GET  /api/monitor/agent/status` — get desktop monitor agent status
+- `POST /api/monitor/agent/start` — start the desktop monitor agent
+- `POST /api/monitor/agent/stop` — stop the desktop monitor agent
 - `GET  /api/monitor/privacy/config` — get privacy filter config
 - `POST /api/monitor/privacy/config` — update privacy filter config
+- `GET  /api/monitor/classification/config` — get focus/distraction rules
+- `POST /api/monitor/classification/config` — update focus/distraction rules
+- `POST /api/monitor/classification/config/reset` — reset focus/distraction rules
 
 If the backend or API key is unavailable, the frontend will still load, but AI breakdown and monitor features may not function.
 
-## Run the desktop monitor agent (macOS only)
+## Monitor workflow (macOS only)
 
-The monitor agent polls the active macOS window every 15 seconds and reports activity to the backend. It requires an active monitor session (toggle the Monitor panel on first).
+The Monitor panel controls both the backend session and the desktop agent:
+
+1. Run the backend with `npm run server`.
+2. Run the frontend with `npm run dev`.
+3. Open the Vite URL.
+4. Open the Monitor panel.
+5. Turn on Active Monitor.
+
+Turning on Active Monitor creates a backend session and starts `scripts/desktop-monitor.js` automatically. The agent polls the active macOS window every 15 seconds and reports activity to the backend.
+
+The agent uses `osascript` — no extra npm packages required. It detects the active app, window title, and browser domain for Chrome and Safari. It reports a window after the user has stayed for at least 10 seconds, and it caps idle time at 5 minutes to avoid counting time away from the desk as focus.
+
+The standalone script is still available for debugging:
 
 ```bash
 npm run monitor-agent
 ```
 
-The agent uses `osascript` — no extra npm packages required. It detects the active app, window title, and browser domain (Chrome and Safari). It will not report a window until the user has stayed for at least 60 seconds, and it caps idle time at 5 minutes to avoid counting time away from the desk as focus.
+Do not run the standalone agent at the same time as the UI-started agent, or events may be duplicated.
+
+### Monitor status
+
+The Monitor panel shows:
+
+- `Tracking` — session is active and the desktop agent is running.
+- `Agent Running` — the desktop collector is active.
+- `Agent Offline` — session exists, but no desktop collector is running.
+- `Needs Permission` — macOS blocked the agent from reading active-window data.
+
+If macOS asks for Accessibility permission, grant it to the app that started the backend, such as Terminal, VS Code, Cursor, or Node.
+
+### Classification rules
+
+Activity is classified with rule-based app/domain matching:
+
+- Focus examples: Code, Cursor, Word, Excel, Google Docs, Google Sheets, Canvas, Notion, GitHub.
+- Distraction examples: Reddit, Instagram, TikTok, Twitter/X, Netflix, Twitch.
+
+Rules can be edited in Settings under Monitor Classification. They are persisted in `server/data/classification.json`.
+
+The Monitor timeline shows browser domains as readable web labels. For example, `discord.com` appears as `discord (web)` and the full domain is shown below the label.
+
+### Known Monitor limits
+
+- Firefox domain detection is not supported by the current AppleScript collector.
+- Classification is rule-based, not semantic AI classification.
+- The current app is designed for a local single-user, single-active-session workflow.
+- Very frequent window-title changes can split activity into short segments that may be skipped.
+- The 10-second reporting threshold is useful for MVP testing; a production build may want a longer threshold such as 60 seconds.
 
 ## Environment variables
 

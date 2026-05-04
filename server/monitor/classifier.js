@@ -1,38 +1,20 @@
-const DISTRACTION_APPS = new Set([
-  'tiktok', 'instagram', 'reddit', 'twitter', 'x', 'facebook', 'snapchat',
-  'netflix', 'hulu', 'disney+', 'twitch', 'pinterest', 'tumblr', 'discord',
-  'whatsapp', 'telegram', 'wechat', 'line',
-]);
+import { readClassificationConfig } from './classificationConfig.js';
 
-const DISTRACTION_DOMAINS = new Set([
-  'tiktok.com', 'instagram.com', 'reddit.com', 'twitter.com', 'x.com',
-  'facebook.com', 'snapchat.com', 'netflix.com', 'hulu.com', 'disneyplus.com',
-  'twitch.tv', 'pinterest.com', 'tumblr.com',
-]);
-
-const FOCUS_APPS = new Set([
-  'vscode', 'visual studio code', 'xcode', 'intellij', 'pycharm', 'webstorm',
-  'sublime text', 'atom', 'vim', 'nvim', 'emacs', 'terminal', 'iterm',
-  'notion', 'obsidian', 'roam', 'logseq', 'bear', 'typora',
-  'figma', 'sketch', 'adobe', 'photoshop', 'illustrator',
-  'word', 'google docs', 'pages', 'excel', 'google sheets',
-  'zoom', 'teams', 'slack', 'meet',
-]);
-
-const FOCUS_DOMAINS = new Set([
-  'github.com', 'gitlab.com', 'stackoverflow.com', 'docs.google.com',
-  'notion.so', 'figma.com', 'linear.app', 'jira.atlassian.com',
-  'leetcode.com', 'coursera.org', 'udemy.com', 'edx.org',
-]);
+function matchesRule(value, rule) {
+  const normalizedRule = rule.toLowerCase();
+  if (normalizedRule.length <= 2) return value === normalizedRule;
+  return value.includes(normalizedRule);
+}
 
 export function classify(event, taskContext = null) {
+  const config = readClassificationConfig();
   const appLower = (event.appName || '').toLowerCase();
   const domainLower = (event.domain || '').toLowerCase();
   const titleLower = (event.windowTitle || '').toLowerCase();
 
   // Check distraction by app name
-  for (const d of DISTRACTION_APPS) {
-    if (appLower.includes(d)) {
+  for (const d of config.distractionApps) {
+    if (matchesRule(appLower, d)) {
       return {
         classification: 'distraction',
         confidence: 0.95,
@@ -43,8 +25,8 @@ export function classify(event, taskContext = null) {
   }
 
   // Check distraction by domain
-  for (const d of DISTRACTION_DOMAINS) {
-    if (domainLower.includes(d)) {
+  for (const d of config.distractionDomains) {
+    if (matchesRule(domainLower, d)) {
       return {
         classification: 'distraction',
         confidence: 0.95,
@@ -74,8 +56,8 @@ export function classify(event, taskContext = null) {
   }
 
   // Check focus by app name
-  for (const f of FOCUS_APPS) {
-    if (appLower.includes(f)) {
+  for (const f of config.focusApps) {
+    if (matchesRule(appLower, f)) {
       return {
         classification: 'focus',
         confidence: 0.9,
@@ -86,8 +68,8 @@ export function classify(event, taskContext = null) {
   }
 
   // Check focus by domain
-  for (const f of FOCUS_DOMAINS) {
-    if (domainLower.includes(f)) {
+  for (const f of config.focusDomains) {
+    if (matchesRule(domainLower, f)) {
       return {
         classification: 'focus',
         confidence: 0.9,
