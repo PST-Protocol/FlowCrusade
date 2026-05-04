@@ -8,11 +8,11 @@ import {
 import { THEMES } from './data/themes';
 import { INITIAL_STATS } from './data/initialData';
 import { getLevelForMinutes, getRewardBounds, clamp01, formatMins } from './data/rewards';
-import { loadEvents, loadTasks, loadNotes, loadHistory, loadSettings } from './utils/storage';
+import { loadTasks, loadNotes, loadHistory, loadSettings } from './utils/storage';
 import { stripExtension, fileToBase64 } from './utils/file';
 import { findNodeById, updateNodeById } from './utils/taskTree';
 import { postBreakdownRequest } from './services/breakdownApi';
-import { fetchStats, recordFocusSession, recordCompletedTask, recordDistraction } from './services/statsApi';
+import { fetchStats, recordFocusSession, recordCompletedTask } from './services/statsApi';
 import './styles/runtimeAnimations';
 
 import ViewA from './components/views/ViewA';
@@ -35,13 +35,7 @@ export default function FlowCrusadeApp() {
   const [path, setPath] = useState([]); // Subtask drill-down path: [taskId, subtaskId, ...]
   
   const [stats, setStats] = useState({ ...INITIAL_STATS, focusTimeToday: 0, sessions: 0, avgSession: 0, completionRate: 0, distractCount: 0, distractTime: 0, taskCompletionMinutes: 0, weightedCredit: 0, focusScore: 0 });
-  const [events, setEvents] = useState(loadEvents);
   const [historyRecords, setHistoryRecords] = useState(loadHistory);
-
-  // Monitor Events: 每次变化自动保存
-  useEffect(() => {
-    localStorage.setItem('fc_events', JSON.stringify(events));
-  }, [events]);
   const [notes, setNotes] = useState(loadNotes);
   const [isNotesOpen, setIsNotesOpen] = useState(false); // mobile / tablet drawer
   const [isNotesSidebarOpen, setIsNotesSidebarOpen] = useState(true); // desktop sidebar
@@ -79,6 +73,20 @@ export default function FlowCrusadeApp() {
       .catch(() => {
         // Keep the app usable when only the Vite frontend is running.
       });
+  }, []);
+
+  // Real-time stats updates from the monitor agent via SSE
+  useEffect(() => {
+    const API_BASE = import.meta.env.VITE_API_BASE || 'http://localhost:8787';
+    const sse = new EventSource(`${API_BASE}/api/monitor/stream`);
+    sse.addEventListener('stats.updated', (e) => {
+      try {
+        const updated = JSON.parse(e.data);
+        setStats((prev) => ({ ...prev, ...updated }));
+      } catch {}
+    });
+    sse.onerror = () => {};
+    return () => sse.close();
   }, []);
 
   // Settings + task breakdown history are persisted locally.
@@ -599,43 +607,6 @@ export default function FlowCrusadeApp() {
     setIsFocusedMode(false);
   };
 
-  const handleSimulateDistraction = async (source = 'Reddit') => {
-    const time = new Date().toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
-    const timestamp = new Date().toISOString();
-    const durationMins = Math.max(1, Number(settings.distractThreshold) || 2);
-    setEvents([{ id: Date.now(), time, timestamp, type: 'distract', desc: `Distracted → ${source} (${durationMins}m)`, source, durationMins }, ...events]);
-
-    try {
-      const updatedStats = await recordDistraction({ appName: source, minutes: durationMins, timestamp });
-      setStats(prev => ({ ...prev, ...updatedStats }));
-    } catch (error) {
-      setStats(prev => ({
-        ...prev,
-        distractCount: (prev.distractCount || 0) + 1,
-        distractTime: (prev.distractTime || 0) + durationMins,
-        topDistractions: Array.from(new Set([source, ...(prev.topDistractions || [])])).slice(0, 3),
-      }));
-      showToast('Backend distraction save failed, using local fallback.', 'warning');
-      return;
-    }
-
-    showToast(`Distraction: ${source}`, 'warning');
-  };
-
-  const addFocusEvent = () => {
-    const time = new Date().toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
-    setEvents([{ id: Date.now(), time, timestamp: new Date().toISOString(), type: 'focus', desc: 'Back to Focus' }, ...events]);
-    showToast('Back to focus!');
-  };
-
-  const deleteEvent = (eventId) => {
-    setEvents(events.filter(ev => ev.id !== eventId));
-  };
-
-  const clearAllEvents = () => {
-    setEvents([]);
-    showToast('Timeline cleared');
-  };
 
   return (
     <div className={`flex h-screen w-full font-sans overflow-hidden selection:bg-indigo-500/30 transition-colors duration-300 ${t.bgApp} ${t.textMain}`}>
@@ -721,13 +692,9 @@ export default function FlowCrusadeApp() {
       </nav>
 
       {/* LEFT PANELS OVERLAYS */}
-      <LeftPanels 
-        t={t} theme={theme} activePanel={activePanel} close={() => setActivePanel(null)} 
-        stats={stats} events={events} tasks={tasks} settings={settings} setSettings={setSettings}
-        onSimulateDistraction={handleSimulateDistraction}
-        onAddFocusEvent={addFocusEvent}
-        onDeleteEvent={deleteEvent}
-        onClearEvents={clearAllEvents}
+      <LeftPanels
+        t={t} theme={theme} activePanel={activePanel} close={() => setActivePanel(null)}
+        stats={stats} tasks={tasks} settings={settings} setSettings={setSettings}
         onSelectTask={selectTaskFromCalendar}
         onCreateTask={(title, date) => createNewTask(title, date)}
         onUpdateTaskDate={updateTaskDate}
