@@ -37,6 +37,9 @@ venv/
 env/
 ENV/
 
+# Runtime data (generated at startup)
+server/data/
+
 # Environment / secrets
 .env
 /.env

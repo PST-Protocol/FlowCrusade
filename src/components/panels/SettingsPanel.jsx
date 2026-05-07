@@ -1,11 +1,99 @@
-import React, { useState, useEffect, useRef, useMemo } from 'react';
-import { 
-Calendar as CalendarIcon, Moon, Sun, Bell
+import React, { useState, useEffect } from 'react';
+import {
+  Calendar as CalendarIcon, Moon, Sun, Bell, RotateCcw, Save
 } from 'lucide-react';
 
+import {
+  getClassificationConfig,
+  updateClassificationConfig,
+  resetClassificationConfig,
+} from '../../services/monitorApi';
+
+const CLASSIFICATION_FIELDS = [
+  ['focusApps', 'Focus Apps'],
+  ['focusDomains', 'Focus Domains'],
+  ['distractionApps', 'Distraction Apps'],
+  ['distractionDomains', 'Distraction Domains'],
+];
+
+function listToText(list = []) {
+  return list.join('\n');
+}
+
+function textToList(text = '') {
+  return Array.from(
+    new Set(
+      text
+        .split(/[\n,]/)
+        .map((item) => item.trim())
+        .filter(Boolean)
+    )
+  );
+}
 
 export default function SettingsPanel({ t, settings, setSettings, showToast }) {
   const handleChange = (k, v) => setSettings({...settings, [k]: v});
+  const [classification, setClassification] = useState(null);
+  const [savingClassification, setSavingClassification] = useState(false);
+
+  useEffect(() => {
+    getClassificationConfig()
+      .then((config) => {
+        setClassification({
+          focusApps: listToText(config.focusApps),
+          focusDomains: listToText(config.focusDomains),
+          distractionApps: listToText(config.distractionApps),
+          distractionDomains: listToText(config.distractionDomains),
+        });
+      })
+      .catch(() => {});
+  }, []);
+
+  const handleClassificationChange = (key, value) => {
+    setClassification((prev) => ({ ...(prev || {}), [key]: value }));
+  };
+
+  const saveClassification = async () => {
+    if (!classification) return;
+    setSavingClassification(true);
+    try {
+      const saved = await updateClassificationConfig({
+        focusApps: textToList(classification.focusApps),
+        focusDomains: textToList(classification.focusDomains),
+        distractionApps: textToList(classification.distractionApps),
+        distractionDomains: textToList(classification.distractionDomains),
+      });
+      setClassification({
+        focusApps: listToText(saved.focusApps),
+        focusDomains: listToText(saved.focusDomains),
+        distractionApps: listToText(saved.distractionApps),
+        distractionDomains: listToText(saved.distractionDomains),
+      });
+      showToast?.('Monitor classification rules saved');
+    } catch (error) {
+      showToast?.(`Save failed: ${error.message}`, 'error');
+    } finally {
+      setSavingClassification(false);
+    }
+  };
+
+  const resetClassification = async () => {
+    setSavingClassification(true);
+    try {
+      const defaults = await resetClassificationConfig();
+      setClassification({
+        focusApps: listToText(defaults.focusApps),
+        focusDomains: listToText(defaults.focusDomains),
+        distractionApps: listToText(defaults.distractionApps),
+        distractionDomains: listToText(defaults.distractionDomains),
+      });
+      showToast?.('Monitor classification rules reset');
+    } catch (error) {
+      showToast?.(`Reset failed: ${error.message}`, 'error');
+    } finally {
+      setSavingClassification(false);
+    }
+  };
 
   return (
     <div className="space-y-6 animate-fade-in pb-10">
@@ -43,6 +131,44 @@ export default function SettingsPanel({ t, settings, setSettings, showToast }) {
              <span className={`text-sm font-bold ${t.textMain}`}>Distract Threshold (mins)</span>
              <input type="number" value={settings.distractThreshold} onChange={(e) => handleChange('distractThreshold', e.target.value)} className={`w-16 bg-transparent border-b text-center focus:outline-none focus:border-indigo-500 ${t.border} ${t.textMain}`} />
           </div>
+        </div>
+      </div>
+
+      {/* Monitor Classification */}
+      <div>
+        <div className="flex items-center justify-between gap-3 mb-3 mt-8">
+          <h4 className={`font-bold text-xs uppercase tracking-wider ${t.textMuted}`}>Monitor Classification</h4>
+          <div className="flex items-center gap-2">
+            <button
+              disabled={savingClassification || !classification}
+              onClick={resetClassification}
+              className={`p-2 rounded-lg border transition-colors disabled:opacity-50 ${t.border} ${t.textMuted} hover:text-amber-400`}
+              title="Reset defaults"
+            >
+              <RotateCcw className="w-3.5 h-3.5" />
+            </button>
+            <button
+              disabled={savingClassification || !classification}
+              onClick={saveClassification}
+              className="p-2 rounded-lg border border-indigo-500/40 text-indigo-400 bg-indigo-500/10 transition-colors disabled:opacity-50 hover:bg-indigo-500/20"
+              title="Save rules"
+            >
+              <Save className="w-3.5 h-3.5" />
+            </button>
+          </div>
+        </div>
+        <div className="grid grid-cols-1 gap-3">
+          {CLASSIFICATION_FIELDS.map(([key, label]) => (
+            <label key={key} className={`block p-4 rounded-xl border ${t.bgCard} ${t.border}`}>
+              <span className={`block text-xs font-bold mb-2 ${t.textMain}`}>{label}</span>
+              <textarea
+                rows={4}
+                value={classification?.[key] || ''}
+                onChange={(e) => handleClassificationChange(key, e.target.value)}
+                className={`w-full resize-y rounded-lg border px-3 py-2 text-xs leading-relaxed outline-none transition-colors ${t.border} ${t.textMain} ${settings.theme === 'dark' ? 'bg-black/20 focus:border-indigo-500' : 'bg-white focus:border-indigo-400'}`}
+              />
+            </label>
+          ))}
         </div>
       </div>
 
