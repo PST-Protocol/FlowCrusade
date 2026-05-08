@@ -1,222 +1,197 @@
+<div align="center">
+
 # FlowCrusade
 
-FlowCrusade is a React/Vite productivity app that turns a high-level task into smaller focus steps, tracks real-time focus and distraction activity via a macOS desktop monitor agent, and keeps quick notes beside the working canvas.
+**AI-powered focus companion for deep work.**
 
-## What this app does
+Break any task into steps → monitor your real-time activity → see exactly where your time goes.
 
-- Creates tasks manually or from an AI breakdown request (powered by Gemini).
-- Displays task trees with root tasks, subtasks, and deeper child steps.
-- Supports task drill-down and focused subtask views.
-- Monitors the active macOS window in real time and classifies activity as focus or distraction.
-- Starts the macOS monitor agent from the Monitor UI and reports agent status.
-- Tracks focus minutes, distraction events, distract time, streaks, and peak focus hours — updated live via SSE.
-- Lets users edit focus/distraction app and domain rules from Settings.
-- Stores tasks and notes in `localStorage`; stats and monitor sessions are persisted server-side.
-- Uses a local Express server for AI task breakdowns and the activity monitor API.
+![React](https://img.shields.io/badge/React-19-61DAFB?logo=react&logoColor=white&style=flat-square)
+![Vite](https://img.shields.io/badge/Vite-7-646CFF?logo=vite&logoColor=white&style=flat-square)
+![Node.js](https://img.shields.io/badge/Node.js-Express-339933?logo=node.js&logoColor=white&style=flat-square)
+![macOS](https://img.shields.io/badge/Monitor-macOS-000000?logo=apple&logoColor=white&style=flat-square)
+![Gemini](https://img.shields.io/badge/AI-Gemini-4285F4?logo=google&logoColor=white&style=flat-square)
 
-## Project structure
+</div>
 
-```txt
-.
-├── scripts/
-│   └── desktop-monitor.js        # macOS desktop activity monitor agent (osascript-based)
-├── server/
-│   ├── index.js                  # Express server: AI breakdown + stats APIs
-│   ├── statsStore.js             # Stats storage helpers and computeStats()
-│   ├── data/                     # Runtime JSON stores (git-ignored, auto-created)
-│   │   ├── stats.json
-│   │   ├── monitor.json
-│   │   ├── privacy.json
-│   │   └── classification.json
-│   └── monitor/
-│       ├── routes.js             # /api/monitor REST endpoints
-│       ├── agent.js              # Starts/stops/status-checks the desktop monitor agent
-│       ├── store.js              # Session + event persistence, crash recovery
-│       ├── stream.js             # SSE broadcast to frontend
-│       ├── classifier.js         # Rule-based focus/distraction classifier
-│       ├── classificationConfig.js # Editable focus/distraction rules
-│       ├── privacy.js            # Privacy filter (blockedApps / domains / keywords)
-│       └── statsBridge.js        # Writes classified events to stats, broadcasts stats.updated
-├── src/
-│   ├── App.jsx                   # App-level orchestration, state, and layout wiring
-│   ├── main.jsx                  # React entry point
-│   ├── index.css                 # Tailwind/global CSS
-│   ├── data/
-│   │   ├── initialData.js        # Demo tasks and initial state
-│   │   ├── rewards.js            # Reward/level math helpers and milestone config
-│   │   └── themes.js             # Light/dark theme token map
-│   ├── services/
-│   │   ├── statsApi.js           # Fetch wrappers for /api/stats endpoints
-│   │   └── monitorApi.js         # Fetch wrappers + SSE for /api/monitor endpoints
-│   ├── utils/
-│   │   ├── file.js               # File/base64 helpers
-│   │   ├── storage.js            # localStorage loaders
-│   │   └── taskTree.js           # Tree search/update helpers
-│   ├── components/
-│   │   ├── common/               # Small reusable UI pieces
-│   │   ├── views/                # Main task workflow screens
-│   │   └── panels/               # Calendar/stats/monitor/settings/notes panels
-│   └── styles/
-│       └── runtimeAnimations.js  # Runtime animation and scrollbar style injection
-└── package.json
-```
+---
 
-## Component map
+## What it does
 
-### Main views
+| Feature | Description |
+|---|---|
+| **AI Task Breakdown** | Type a goal or upload a file — Gemini breaks it into 3 subtasks, each drill-downable into 3 more |
+| **Real-time Activity Monitor** | macOS agent reads the active window every 15s and classifies it as focus or distraction |
+| **Live Stats** | Focus minutes, distraction time, streaks, and peak hours — updated instantly via SSE |
+| **Classification Rules** | Edit which apps and domains count as focus or distraction from the Settings panel |
+| **Privacy Filter** | Sensitive apps (Messages, 1Password, etc.) are never reported to the backend |
+| **Quick Notes** | Persistent scratchpad beside the task canvas |
+| **Calendar View** | Schedule tasks and browse history by date |
 
-- `ViewA.jsx` — empty/home state where the user enters a task or uploads a file.
-- `ViewB.jsx` — active root task overview before drilling into subtasks.
-- `ViewCE.jsx` — task breakdown tree and subtask drill-down experience.
-- `FocusDetailView.jsx` — focused view for a selected leaf-level subtask.
+---
 
-### Panels
+## Getting started
 
-- `LeftPanels.jsx` — chooses which left overlay panel is visible.
-- `CalendarPanel.jsx` — task calendar and manual task creation.
-- `StatsPanel.jsx` — focus score, rewards, leaderboard, and analytics.
-- `MonitorPanel.jsx` — real-time activity timeline, Monitor session toggle, and agent status.
-- `SettingsPanel.jsx` — theme, preferences, and monitor classification rules.
-- `QuickNotesPanel.jsx` — local quick notes.
+### Prerequisites
 
-### Common components
+- Node.js 18+
+- macOS (for the activity monitor agent; the rest works on any OS)
+- A [Google Gemini API key](https://aistudio.google.com/app/apikey)
 
-- `ChatInput.jsx` — shared text/file input box.
-- `CollapsibleText.jsx` — expandable description text.
-- `NavItem.jsx` — sidebar navigation item.
-- `ProgressRing.jsx` — circular reward progress display.
-- `RewardProgressModal.jsx` — reward milestone modal.
-
-## Run locally
+### Install
 
 ```bash
+git clone https://github.com/PST-Protocol/Flow-Crusade.git
+cd FlowCrusade
 npm install
+```
+
+### Configure
+
+```bash
+cp .env.example .env
+# Add your Gemini API key to .env:
+# GEMINI_API_KEY=your_key_here
+```
+
+### Run
+
+Open two terminals:
+
+```bash
+# Terminal 1 — backend (port 8787)
+npm run server
+
+# Terminal 2 — frontend (port 5173)
 npm run dev
 ```
 
-Open the Vite URL printed in the terminal, usually `http://localhost:5173`. If that port is occupied, Vite may use another port such as `http://localhost:5174`.
+Then open `http://localhost:5173`.
 
-## Run the backend
+---
 
-In a separate terminal:
+## Activity monitor (macOS)
 
-```bash
-npm run server
-```
+The Monitor panel in the sidebar controls everything. Toggle **Active Monitor** on to:
 
-The server runs on `http://localhost:8787` and exposes:
+1. Start a backend session
+2. Automatically launch the desktop agent (`scripts/desktop-monitor.js`)
+3. Stream classified events to the timeline in real time
 
-- `POST /api/breakdown` — AI task breakdown (Gemini)
-- `GET  /api/stats` — daily focus stats
-- `POST /api/stats/focus-session` — record a focus session
-- `POST /api/stats/completed-task` — record a completed task
-- `POST /api/stats/distraction` — record a distraction event
-- `GET  /api/monitor/stream` — SSE stream for real-time events
-- `POST /api/monitor/session/start` — start a monitor session
-- `POST /api/monitor/session/end` — end a monitor session
-- `GET  /api/monitor/session/active` — get the active monitor session
-- `POST /api/monitor/event` — receive a classified activity event
-- `GET  /api/monitor/events/:sessionId` — list events for a session
-- `GET  /api/monitor/agent/status` — get desktop monitor agent status
-- `POST /api/monitor/agent/start` — start the desktop monitor agent
-- `POST /api/monitor/agent/stop` — stop the desktop monitor agent
-- `GET  /api/monitor/privacy/config` — get privacy filter config
-- `POST /api/monitor/privacy/config` — update privacy filter config
-- `GET  /api/monitor/classification/config` — get focus/distraction rules
-- `POST /api/monitor/classification/config` — update focus/distraction rules
-- `POST /api/monitor/classification/config/reset` — reset focus/distraction rules
+The agent uses native `osascript` — no extra npm packages. It detects the active app, window title, and browser domain (Chrome and Safari supported). A window is only reported after the user has stayed for at least 10 seconds; idle time is capped at 5 minutes so stepping away doesn't inflate focus scores.
 
-If the backend or API key is unavailable, the frontend will still load, but AI breakdown and monitor features may not function.
+**Status indicators in the Monitor panel:**
 
-## Monitor workflow (macOS only)
+| Status | Meaning |
+|---|---|
+| `Tracking` | Session active, desktop agent running |
+| `Session active · agent offline` | Session exists, agent not detected |
+| `Needs permission` | macOS blocked Accessibility access |
+| `Off` | No active session |
 
-The Monitor panel controls both the backend session and the desktop agent:
+> If macOS asks for Accessibility permission, grant it to the terminal or IDE that started the backend (Terminal, VS Code, Cursor, etc.).
 
-1. Run the backend with `npm run server`.
-2. Run the frontend with `npm run dev`.
-3. Open the Vite URL.
-4. Open the Monitor panel.
-5. Turn on Active Monitor.
-
-Turning on Active Monitor creates a backend session and starts `scripts/desktop-monitor.js` automatically. The agent polls the active macOS window every 15 seconds and reports activity to the backend.
-
-The agent uses `osascript` — no extra npm packages required. It detects the active app, window title, and browser domain for Chrome and Safari. It reports a window after the user has stayed for at least 10 seconds, and it caps idle time at 5 minutes to avoid counting time away from the desk as focus.
-
-The standalone script is still available for debugging:
+The standalone agent is also available for debugging without the UI:
 
 ```bash
 npm run monitor-agent
 ```
 
-Do not run the standalone agent at the same time as the UI-started agent, or events may be duplicated.
+> Do not run both the UI-managed and standalone agents simultaneously — events will be duplicated.
 
-### Monitor status
+---
 
-The Monitor panel shows:
+## Classification rules
 
-- `Tracking` — session is active and the desktop agent is running.
-- `Agent Running` — the desktop collector is active.
-- `Agent Offline` — session exists, but no desktop collector is running.
-- `Needs Permission` — macOS blocked the agent from reading active-window data.
+Activity is matched by app name and domain:
 
-If macOS asks for Accessibility permission, grant it to the app that started the backend, such as Terminal, VS Code, Cursor, or Node.
+- **Focus** — VS Code, Cursor, Xcode, Terminal, Word, Excel, Notion, Figma, GitHub, StackOverflow, …
+- **Distraction** — Reddit, Instagram, TikTok, Twitter/X, Netflix, Twitch, YouTube (unless task context matches), …
 
-### Classification rules
+Rules are editable in **Settings → Monitor Classification** and persisted in `server/data/classification.json`.
 
-Activity is classified with rule-based app/domain matching:
+---
 
-- Focus examples: Code, Cursor, Word, Excel, Google Docs, Google Sheets, Canvas, Notion, GitHub.
-- Distraction examples: Reddit, Instagram, TikTok, Twitter/X, Netflix, Twitch.
+## API reference
 
-Rules can be edited in Settings under Monitor Classification. They are persisted in `server/data/classification.json`.
+The backend runs on `http://localhost:8787`.
 
-The Monitor timeline shows browser domains as readable web labels. For example, `discord.com` appears as `discord (web)` and the full domain is shown below the label.
+<details>
+<summary>Expand full API list</summary>
 
-### Known Monitor limits
+| Method | Path | Description |
+|---|---|---|
+| `POST` | `/api/breakdown` | AI task breakdown (Gemini) |
+| `GET` | `/api/stats` | Daily focus stats |
+| `POST` | `/api/stats/focus-session` | Record a focus session |
+| `POST` | `/api/stats/completed-task` | Record a completed task |
+| `POST` | `/api/stats/distraction` | Record a distraction event |
+| `GET` | `/api/monitor/stream` | SSE stream for real-time events |
+| `POST` | `/api/monitor/session/start` | Start a monitor session |
+| `POST` | `/api/monitor/session/end` | End a monitor session |
+| `GET` | `/api/monitor/session/active` | Get the active session |
+| `POST` | `/api/monitor/event` | Receive a classified activity event |
+| `GET` | `/api/monitor/events/:sessionId` | List events for a session |
+| `GET` | `/api/monitor/agent/status` | Desktop agent status |
+| `POST` | `/api/monitor/agent/start` | Start the desktop agent |
+| `POST` | `/api/monitor/agent/stop` | Stop the desktop agent |
+| `GET` | `/api/monitor/privacy/config` | Get privacy filter config |
+| `POST` | `/api/monitor/privacy/config` | Update privacy filter config |
+| `GET` | `/api/monitor/classification/config` | Get focus/distraction rules |
+| `POST` | `/api/monitor/classification/config` | Update focus/distraction rules |
+| `POST` | `/api/monitor/classification/config/reset` | Reset rules to defaults |
 
-- Firefox domain detection is not supported by the current AppleScript collector.
-- Classification is rule-based, not semantic AI classification.
-- The current app is designed for a local single-user, single-active-session workflow.
-- Very frequent window-title changes can split activity into short segments that may be skipped.
-- The 10-second reporting threshold is useful for MVP testing; a production build may want a longer threshold such as 60 seconds.
+</details>
 
-## Environment variables
+---
 
-Copy the example file:
+## Project structure
 
-```bash
-cp .env.example .env
+```
+Flow-Crusade/
+├── scripts/
+│   └── desktop-monitor.js          # macOS window monitor agent
+├── server/
+│   ├── index.js                    # Express entry point
+│   ├── statsStore.js               # Stats helpers and computeStats()
+│   └── monitor/
+│       ├── routes.js               # /api/monitor endpoints
+│       ├── agent.js                # Agent process lifecycle
+│       ├── store.js                # Session/event persistence + crash recovery
+│       ├── stream.js               # SSE broadcast
+│       ├── classifier.js           # Rule-based focus/distraction classifier
+│       ├── classificationConfig.js # Editable classification rules
+│       ├── privacy.js              # Privacy filter
+│       └── statsBridge.js          # Writes events to stats, broadcasts stats.updated
+└── src/
+    ├── App.jsx                     # Global state, layout, SSE stats listener
+    ├── services/
+    │   ├── statsApi.js             # /api/stats fetch wrappers
+    │   └── monitorApi.js           # /api/monitor fetch wrappers + SSE
+    ├── components/
+    │   ├── panels/                 # Monitor, Stats, Calendar, Settings, Notes
+    │   ├── views/                  # ViewA (home), ViewB (task), ViewCE (tree), FocusDetail
+    │   └── common/                 # Shared UI primitives
+    └── utils/
+        ├── taskTree.js             # Tree traversal helpers
+        └── storage.js              # localStorage loaders
 ```
 
-Then fill in the required API keys:
+---
 
-| Variable | Description |
-|---|---|
-| `GEMINI_API_KEY` | Google Gemini API key for AI task breakdown |
+## Known limits
 
-## Suggested testing strategy
+- Firefox browser domain detection is not supported (no AppleScript access).
+- Classification is rule-based, not semantic — unusual app names may not be recognized.
+- Designed for single-user, single-machine, local use only.
+- The 10-second reporting threshold is intentionally low for testing; consider 60s+ for production use.
 
-Good first test targets:
+---
 
-1. `src/utils/taskTree.js` — `findNodeById`, `findPathToNode`, `updateNodeById`
-2. `src/data/rewards.js` — `getLevelForMinutes`, `getRewardBounds`, `clamp01`, `formatMins`
-3. `src/utils/storage.js` — localStorage fallback and corrupted JSON handling
-4. `server/monitor/classifier.js` — classification rules for known apps and domains
-5. `server/statsStore.js` — `computeStats`, `computeStreak`, `computePeakFocusTime`
+## Tech stack
 
-A future test setup can use Vitest + React Testing Library:
-
-```bash
-npm install -D vitest @testing-library/react @testing-library/jest-dom jsdom
-```
-
-Then add scripts:
-
-```json
-{
-  "scripts": {
-    "test": "vitest",
-    "test:ui": "vitest --ui"
-  }
-}
-```
+- **Frontend** — React 19, Vite 7, Tailwind CSS, Lucide icons
+- **Backend** — Node.js, Express, Server-Sent Events
+- **AI** — Google Gemini (task breakdown)
+- **Monitor** — macOS `osascript` / `ioreg` (no native addons)
+- **Storage** — localStorage (tasks/notes), JSON files (stats/sessions)
