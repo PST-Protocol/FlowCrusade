@@ -15,6 +15,11 @@ import JSZip from "jszip";
 import {
   readStatsData, writeStatsData, computeStats, toSafeNumber, addDistractionEvent, addFocusSession,
 } from "./statsStore.js";
+import {
+  initCloudStore, getCloudMode, registerUser, loginUser, requireUser, sanitizeUser, updateProfile,
+  searchUserById, addFriend, listFriends, createGroup, listGroups, addGroupMember,
+  leaderboard, saveSnapshot, loadSnapshot,
+} from "./cloudStore.js";
 import monitorRouter from "./monitor/routes.js";
 import { recoverCrashedSessions } from "./monitor/store.js";
 import { startHeartbeat } from "./monitor/stream.js";
@@ -1172,6 +1177,69 @@ ${getFileSummaryText(file)}
   }
 }
 
+
+
+// ================= ACCOUNT / CLOUD / SOCIAL API =================
+function handleApiError(res, error) {
+  const status = error.statusCode || 500;
+  res.status(status).json({ error: status >= 500 ? 'Server error.' : error.message });
+}
+
+app.get('/api/cloud/status', (req, res) => {
+  res.json({ mode: getCloudMode(), postgresEnabled: getCloudMode() === 'postgres' });
+});
+
+app.post('/api/auth/register', async (req, res) => {
+  try { res.json(await registerUser(req.body || {})); } catch (error) { handleApiError(res, error); }
+});
+
+app.post('/api/auth/login', async (req, res) => {
+  try { res.json(await loginUser(req.body || {})); } catch (error) { handleApiError(res, error); }
+});
+
+app.get('/api/auth/me', async (req, res) => {
+  try { const user = await requireUser(req); res.json({ user: sanitizeUser(user), mode: getCloudMode() }); } catch (error) { handleApiError(res, error); }
+});
+
+app.patch('/api/auth/profile', async (req, res) => {
+  try { const user = await requireUser(req); res.json({ user: await updateProfile(user, req.body || {}) }); } catch (error) { handleApiError(res, error); }
+});
+
+app.get('/api/social/search/:id', async (req, res) => {
+  try { await requireUser(req); const user = await searchUserById(req.params.id); if (!user) return res.status(404).json({ error: 'No user found with that ID.' }); res.json({ user }); } catch (error) { handleApiError(res, error); }
+});
+
+app.get('/api/social/friends', async (req, res) => {
+  try { const user = await requireUser(req); res.json({ friends: await listFriends(user) }); } catch (error) { handleApiError(res, error); }
+});
+
+app.post('/api/social/friends', async (req, res) => {
+  try { const user = await requireUser(req); res.json({ friend: await addFriend(user, req.body?.friendId) }); } catch (error) { handleApiError(res, error); }
+});
+
+app.get('/api/social/groups', async (req, res) => {
+  try { const user = await requireUser(req); res.json({ groups: await listGroups(user) }); } catch (error) { handleApiError(res, error); }
+});
+
+app.post('/api/social/groups', async (req, res) => {
+  try { const user = await requireUser(req); res.json({ group: await createGroup(user, req.body?.name) }); } catch (error) { handleApiError(res, error); }
+});
+
+app.post('/api/social/groups/:groupId/members', async (req, res) => {
+  try { const user = await requireUser(req); res.json({ member: await addGroupMember(user, req.params.groupId, req.body?.friendId) }); } catch (error) { handleApiError(res, error); }
+});
+
+app.get('/api/social/leaderboard', async (req, res) => {
+  try { res.json({ leaderboard: await leaderboard({ groupId: req.query.groupId }) }); } catch (error) { handleApiError(res, error); }
+});
+
+app.post('/api/cloud/snapshot', async (req, res) => {
+  try { const user = await requireUser(req); res.json(await saveSnapshot(user, req.body || {})); } catch (error) { handleApiError(res, error); }
+});
+
+app.get('/api/cloud/snapshot', async (req, res) => {
+  try { const user = await requireUser(req); res.json(await loadSnapshot(user)); } catch (error) { handleApiError(res, error); }
+});
 
 // ================= STATS API + LOCAL JSON STORAGE =================
 // Stats functions are in statsStore.js; imported at the top.

@@ -1,20 +1,13 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
-import { 
-  Calendar as CalendarIcon, BarChart2, Activity, Plus, Mic, Send, 
-  ChevronRight, Home, CheckCircle, Clock, RefreshCw, 
-  X, Edit3, Trash2, Zap, Play, Pause, RotateCcw,
-  Paperclip, ArrowLeft, Settings as SettingsIcon,
-  Moon, Sun, Bell, Database, Key, ShieldAlert,
-  ChevronDown, ChevronUp, ChevronLeft, Users, MapPin, Trophy, Ticket,
-  Menu, PanelLeftClose
-} from 'lucide-react';
+import { X } from 'lucide-react';
 
 import CalendarPanel from './CalendarPanel';
 import StatsPanel from './StatsPanel';
 import MonitorPanel from './MonitorPanel';
 import SettingsPanel from './SettingsPanel';
+import AccountPanel from './AccountPanel';
 
-export default function LeftPanels({ t, theme, activePanel, close, stats, tasks, settings, setSettings, onSelectTask, onCreateTask, onUpdateTaskDate, onDeleteTask, onToggleTask, historyRecords, activeTaskId, showToast }) {
+export default function LeftPanels({ t, theme, activePanel, close, stats, tasks, setTasks, settings, setSettings, onSelectTask, onCreateTask, onUpdateTaskDate, onDeleteTask, onToggleTask, historyRecords, activeTaskId, showToast }) {
   const [panelWidth, setPanelWidth] = useState(360);
 
   if (!activePanel) return null;
@@ -28,7 +21,7 @@ export default function LeftPanels({ t, theme, activePanel, close, stats, tasks,
       />
 
       <div className={`border-r shadow-lg flex flex-col shrink-0 z-30 relative ${t.bgPanel} ${t.border}`} style={{ width: panelWidth }}>
-        {/* 右侧拖拽条 */}
+        {/* Right resize handle */}
         <div
           className="absolute right-0 top-0 bottom-0 w-2 cursor-col-resize z-40 group -mr-1"
           onMouseDown={(e) => {
@@ -59,6 +52,7 @@ export default function LeftPanels({ t, theme, activePanel, close, stats, tasks,
           {activePanel === 'stats' && <StatsPanel t={t} theme={theme} stats={stats} />}
           {activePanel === 'monitor' && <MonitorPanel t={t} theme={theme} enabled={settings.monitorEnabled} onToggle={(v) => setSettings({ ...settings, monitorEnabled: v })} showToast={showToast} />}
           {activePanel === 'settings' && <SettingsPanel t={t} settings={settings} setSettings={setSettings} showToast={showToast} />}
+          {activePanel === 'account' && <AccountPanel t={t} theme={theme} settings={settings} setSettings={setSettings} tasks={tasks} setTasks={setTasks} stats={stats} showToast={showToast} />}
         </div>
       </div>
     </>

@@ -62,15 +62,18 @@ export default function ViewCE({ t, theme, rootTask, path, onBreakdown, onRegene
       </div>
 
       <div className="space-y-4">
-        {contextList.map((sub, index) => (
-          <div key={sub.id} className={`rounded-2xl p-5 border shadow-sm hover:shadow-md transition-all group flex flex-col md:flex-row md:items-start justify-between gap-6 animate-slide-up ${t.bgCard} ${t.border} hover:${t.borderFocus}`} style={{ animationDelay: `${index * 0.05}s` }}>
+        {contextList.map((sub, index) => {
+          const isDone = sub.status === 'done' || sub.progress === 100;
+          const doneTextClass = isDone ? 'line-through decoration-white decoration-1 opacity-60' : '';
+          return (
+          <div key={sub.id} className={`rounded-2xl p-5 border shadow-sm hover:shadow-md transition-all group flex flex-col md:flex-row md:items-start justify-between gap-6 animate-slide-up ${t.bgCard} ${isDone ? 'border-white/30' : t.border} hover:${t.borderFocus}`} style={{ animationDelay: `${index * 0.05}s` }}>
             <div className="flex items-start gap-4 flex-1 pt-1">
               <div className="w-8 h-8 rounded-full bg-indigo-500/10 text-indigo-400 flex items-center justify-center font-bold text-sm shrink-0 mt-1 border border-indigo-500/20">
                 {index + 1}
               </div>
               <div className="flex-1">
                 <div className="flex items-center gap-2 flex-wrap">
-                  <h3 className={`text-lg font-bold transition-colors cursor-pointer hover:text-indigo-400 ${t.textMain}`} onClick={() => setFocusingSubtask(sub.id)}>
+                  <h3 className={`text-lg font-bold transition-colors cursor-pointer hover:text-indigo-400 ${t.textMain} ${doneTextClass}`} onClick={() => setFocusingSubtask(sub.id)}>
                     {sub.title}
                   </h3>
                   {sub.aiSource && (
@@ -85,7 +88,7 @@ export default function ViewCE({ t, theme, rootTask, path, onBreakdown, onRegene
                     </span>
                   )}
                 </div>
-                <div className="mt-2">
+                <div className={`mt-2 ${doneTextClass}`}>
                   <CollapsibleText t={t} text={sub.desc} defaultExpanded={false} />
                 </div>
 
@@ -120,13 +123,14 @@ export default function ViewCE({ t, theme, rootTask, path, onBreakdown, onRegene
 
               <button
                 onClick={() => setFocusingSubtask(sub.id)}
-                className={`px-5 py-2 text-sm font-bold rounded-lg transition-all whitespace-nowrap flex items-center gap-2 ${t.primaryBtn}`}
+                className={`px-5 py-2 text-sm font-bold rounded-lg transition-all whitespace-nowrap flex items-center gap-2 ${isDone ? 'bg-white/10 text-white/60 border border-white/20' : t.primaryBtn}`}
               >
-                <Play className="w-4 h-4 fill-current" /> Focus
+                {isDone ? <CheckCircle className="w-4 h-4" /> : <Play className="w-4 h-4 fill-current" />} {isDone ? 'Done' : 'Focus'}
               </button>
             </div>
           </div>
-        ))}
+          );
+        })}
 
         {contextList.length === 0 && (
           <div className={`text-center py-16 border-2 border-dashed rounded-3xl ${t.border} ${t.bgCard}`}>
