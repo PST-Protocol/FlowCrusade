@@ -13,7 +13,7 @@ FlowCrusade is organized by responsibility. Frontend UI lives in `src/`, local A
 | Initial demo tasks, events, stats, and default notes | `src/data/initialData.js` |
 | Theme tokens and theme class maps | `src/data/themes.js` |
 | Reward levels, milestone math, progress formatting | `src/data/rewards.js` |
-| AI task breakdown client request | `src/services/breakdownApi.js` |
+| Local Gemma task breakdown client request | `src/services/breakdownApi.js` |
 | Focus stats client API calls | `src/services/statsApi.js` |
 | Monitor client API calls and SSE helper | `src/services/monitorApi.js` |
 | localStorage load/fallback behavior | `src/utils/storage.js` |
@@ -30,7 +30,7 @@ FlowCrusade is organized by responsibility. Frontend UI lives in `src/`, local A
 | Quick notes sidebar/drawer | `src/components/panels/QuickNotesPanel.jsx` |
 | Left overlay panel switcher | `src/components/panels/LeftPanels.jsx` |
 | Shared input, nav, progress, text, and modal UI | `src/components/common/` |
-| Express server, AI breakdown endpoint, stats endpoints, file preprocessing | `server/index.js` |
+| Express server, local Gemma breakdown endpoint, stats endpoints, file preprocessing | `server/index.js` |
 | Stats persistence and computed daily metrics | `server/statsStore.js` |
 | Monitor REST routes | `server/monitor/routes.js` |
 | Monitor desktop agent process management | `server/monitor/agent.js` |
@@ -58,7 +58,8 @@ FlowCrusade is organized by responsibility. Frontend UI lives in `src/`, local A
 ├── scripts/
 │   └── desktop-monitor.js       # macOS active-window monitor agent
 ├── server/
-│   ├── index.js                 # Express app: AI breakdown, stats API, file handling
+│   ├── index.js                 # Express app: local Gemma breakdown, stats API, file handling
+│   ├── gemma_runner.py          # Local Transformers runner for Gemma
 │   ├── statsStore.js            # Stats JSON store and metric calculation
 │   ├── data/                    # Runtime JSON stores, auto-created and git-ignored
 │   ├── logs/                    # Runtime request/error logs, auto-created and git-ignored
@@ -86,7 +87,7 @@ FlowCrusade is organized by responsibility. Frontend UI lives in `src/`, local A
 │   └── utils/                   # Pure/shared frontend helpers
 ├── tests/
 │   └── README.md                # Suggested first test targets
-├── .env.example                 # Gemini/API environment variable template
+├── .env.example                 # Local Gemma environment variable template
 ├── config.example.json          # Local backend config template
 ├── package.json                 # npm scripts and dependencies
 └── vite.config.js               # Vite config
@@ -107,7 +108,8 @@ Panel navigation is wired in `App.jsx`, while `LeftPanels.jsx` chooses the curre
 
 The local server starts from `server/index.js`.
 
-- AI breakdown requests are handled by `POST /api/breakdown`.
+- Local Gemma breakdown requests are handled by `POST /api/breakdown`.
+- Provider health is exposed at `GET /api/provider/health`; cloud fallback is disabled and the cloud-call counter stays at 0.
 - Focus and completion stats use `/api/stats` endpoints and `server/statsStore.js`.
 - Monitor endpoints are mounted from `server/monitor/routes.js`.
 - Monitor agent lifecycle is managed by `server/monitor/agent.js`.
@@ -142,7 +144,7 @@ Known Monitor follow-ups:
 
 - global state
 - persistence effects
-- AI/task handlers
+- Local Gemma/task handlers
 - stats and monitor event wiring
 - deciding which major view is visible
 - wiring layout components together
@@ -163,4 +165,4 @@ Backend route, persistence, and monitor logic should stay under `server/`.
 | `npm run lint` | Run ESLint |
 | `npm run build` | Build the frontend |
 
-The frontend can still load without the backend, but AI breakdown, persisted stats, and monitor features depend on `npm run server`. In normal MVP usage, the Monitor panel starts the desktop agent automatically; `npm run monitor-agent` is mainly useful for debugging.
+The frontend can still load without the backend, but local Gemma breakdown, persisted stats, and monitor features depend on `npm run server`. In normal MVP usage, the Monitor panel starts the desktop agent automatically; `npm run monitor-agent` is mainly useful for debugging.

@@ -199,7 +199,7 @@ export default function SettingsPanel({ t, settings, setSettings, showToast }) {
       <div className={`p-4 rounded-xl border ${t.bgCard} ${t.border}`}>
         <h4 className={`font-bold text-xs uppercase tracking-wider mb-2 ${t.textMuted}`}>Local Config</h4>
         <p className={`text-xs leading-relaxed ${t.textMuted}`}>
-          Developer/data controls were removed from the UI. To change database or LLM API settings, edit the local <code className="px-1 py-0.5 rounded bg-black/10">config.json</code> file instead of storing those settings in the app screen.
+          Developer/data controls were removed from the UI. To change database or local Gemma settings, edit the local <code className="px-1 py-0.5 rounded bg-black/10">config.json</code> file instead of storing those settings in the app screen.
         </p>
       </div>
 

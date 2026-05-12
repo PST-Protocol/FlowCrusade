@@ -9,12 +9,12 @@ export async function postBreakdownRequest(payload) {
   try {
     data = await response.json();
   } catch {
-    data = { error: 'AI request failed' };
+    data = { error: 'Local breakdown request failed' };
   }
 
   if (!response.ok) {
     const suffix = data.requestId ? ` (requestId: ${data.requestId})` : '';
-    throw new Error(`${data.error || 'AI request failed'}${suffix}`);
+    throw new Error(`${data.error || 'Local breakdown request failed'}${suffix}`);
   }
 
   return data;

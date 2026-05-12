@@ -140,7 +140,7 @@ export default function FlowCrusadeApp() {
   const openRewards = () => setIsRewardsOpen(true);
   const closeRewards = () => setIsRewardsOpen(false);
 
-  const convertAiStepsToChildren = (steps, parentId, source = 'ai') => {
+  const convertAiStepsToChildren = (steps, parentId, source = 'gemma') => {
     return (steps || []).slice(0, 3).map((step, index) => ({
       id: `${parentId}-ai-${index + 1}`,
       title: step.title,
@@ -150,11 +150,11 @@ export default function FlowCrusadeApp() {
       estimatedMinutes: step.estimatedMinutes || 10,
       priority: step.priority || index + 1,
       aiSource: source,
-      children: Array.isArray(step.children) ? step.children : [],
+      children: [],
     }));
   };
 
-  const convertAiStepToNode = (step, nodeId, source = 'ai', slotIndex = 0) => ({
+  const convertAiStepToNode = (step, nodeId, source = 'gemma', slotIndex = 0) => ({
     id: nodeId,
     title: step.title,
     progress: 0,
@@ -296,6 +296,10 @@ export default function FlowCrusadeApp() {
   const buildRootContextPayload = (root) => ({
     rootTitle: root?.title || '',
     rootDescription: root?.desc || '',
+    originalTaskInput: root?.sourceContext?.originalTaskInput || '',
+    fileName: root?.sourceContext?.fileName || null,
+    fileMimeType: root?.sourceContext?.fileMimeType || null,
+    fileSize: root?.sourceContext?.fileSize || null,
   });
 
   const getTreeContext = (targetId) => {
@@ -369,7 +373,7 @@ export default function FlowCrusadeApp() {
               sourceContext,
               children: task.children?.length
                 ? task.children
-                : convertAiStepsToChildren(bootstrap.steps || [], task.id, bootstrap.source || 'ai'),
+                : convertAiStepsToChildren(bootstrap.steps || [], task.id, bootstrap.source || 'gemma'),
             }
           : task
       )
@@ -391,7 +395,7 @@ export default function FlowCrusadeApp() {
 
     try {
       setIsAiWorking(true);
-      showToast('Generating 3 subtasks...');
+      showToast('Generating 3 subtasks locally...');
 
       const filePayload = composerFile
         ? {
@@ -416,7 +420,7 @@ export default function FlowCrusadeApp() {
         status: 'pending',
         date: '',
         desc: result.rootDescription || trimmedInput || 'No description provided.',
-        children: convertAiStepsToChildren(result.steps || [], newTaskId, result.source || 'ai'),
+        children: convertAiStepsToChildren(result.steps || [], newTaskId, result.source || 'gemma'),
         sourceContext: {
           contextId: result.contextId,
           originalTaskInput: trimmedInput,
@@ -436,7 +440,7 @@ export default function FlowCrusadeApp() {
       showToast('Task broken into 3 subtasks');
     } catch (error) {
       console.error(error);
-      showToast(error.message || 'AI breakdown failed', 'warning');
+      showToast(error.message || 'Local breakdown failed', 'warning');
     } finally {
       setIsAiWorking(false);
     }
@@ -463,13 +467,13 @@ export default function FlowCrusadeApp() {
 
     try {
       setIsAiWorking(true);
-      showToast('Generating 3 child subtasks...');
+      showToast('Generating 3 child subtasks locally...');
 
       const ensured = await ensureRootContext(ctx.root);
       const contextId = ensured.sourceContext.contextId;
 
       if (taskIdToBreakdown === ctx.root.id && ensured.bootstrapResult && !ctx.root.children?.length) {
-        const aiChildren = convertAiStepsToChildren(ensured.bootstrapResult.steps || [], ctx.root.id, ensured.bootstrapResult.source || 'ai');
+        const aiChildren = convertAiStepsToChildren(ensured.bootstrapResult.steps || [], ctx.root.id, ensured.bootstrapResult.source || 'gemma');
         setTasks((prev) =>
           prev.map((task) =>
             task.id === ctx.root.id
@@ -502,7 +506,7 @@ export default function FlowCrusadeApp() {
         },
       });
 
-      const aiChildren = convertAiStepsToChildren(result.steps || [], ctx.targetNode.id, result.source || 'ai');
+      const aiChildren = convertAiStepsToChildren(result.steps || [], ctx.targetNode.id, result.source || 'gemma');
 
       setTasks((prev) =>
         prev.map((task) => {
@@ -533,7 +537,7 @@ export default function FlowCrusadeApp() {
       showToast('Subtask broken into 3 child subtasks');
     } catch (error) {
       console.error(error);
-      showToast(error.message || 'AI breakdown failed', 'warning');
+      showToast(error.message || 'Local breakdown failed', 'warning');
     } finally {
       setIsAiWorking(false);
     }
@@ -576,7 +580,7 @@ export default function FlowCrusadeApp() {
       });
 
       const slotIndex = Math.max(0, (ctx.siblingNodes || []).findIndex((node) => node.id === ctx.targetNode.id));
-      const regeneratedNode = convertAiStepToNode(result.step, ctx.targetNode.id, result.source || 'ai', slotIndex);
+      const regeneratedNode = convertAiStepToNode(result.step, ctx.targetNode.id, result.source || 'gemma', slotIndex);
 
       setTasks((prev) =>
         prev.map((task) => {
@@ -584,7 +588,10 @@ export default function FlowCrusadeApp() {
           return {
             ...task,
             sourceContext: ensured.sourceContext,
-            children: updateNodeById(task.children || [], ctx.targetNode.id, () => regeneratedNode),
+            children: updateNodeById(task.children || [], ctx.targetNode.id, (existingNode) => ({
+              ...regeneratedNode,
+              children: existingNode.children || [],
+            })),
           };
         })
       );

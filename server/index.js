@@ -6,7 +6,7 @@ import fs from "node:fs";
 import fsp from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
 import mammoth from "mammoth";
@@ -20,17 +20,21 @@ import { recoverCrashedSessions } from "./monitor/store.js";
 import { startHeartbeat } from "./monitor/stream.js";
 import { maybeStartMonitorAgent } from "./monitor/agent.js";
 
-dotenv.config();
+dotenv.config({ override: true });
 
 const app = express();
 const contextStore = new Map();
-const CONTEXT_TTL_MS = 1000 * 60 * 60 * 6;
+const CONTEXT_TTL_MS = Number(process.env.CONTEXT_TTL_MS || 0) || 1000 * 60 * 60 * 24 * 7;
 const execFileAsync = promisify(execFile);
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const LOG_DIR = path.join(__dirname, "logs");
-const TEMP_ROOT_DIR = path.join(os.tmpdir(), "flow-crusade-gemini");
+const DATA_DIR = path.join(__dirname, "data");
+const CONTEXT_STORE_DIR = path.join(DATA_DIR, "contexts");
+const TEMP_ROOT_DIR = path.join(os.tmpdir(), "flow-crusade-gemma");
+const DEFAULT_GEMMA_MODEL_ID = "google/gemma-4-E2B-it";
+const DEFAULT_GEMMA_MODEL_DIR = path.join(__dirname, "..", "models", "gemma-4-E2B-it");
 
 const SUPPORTED_TEXT_MIME_TYPES = new Set([
   "text/plain",
@@ -44,7 +48,7 @@ const SUPPORTED_TEXT_MIME_TYPES = new Set([
   "text/yaml",
 ]);
 
-const DIRECT_GEMINI_MIME_TYPES = new Set([
+const DIRECT_GEMMA_MIME_TYPES = new Set([
   "application/pdf",
   "image/png",
   "image/jpeg",
@@ -87,6 +91,8 @@ function ensureDirectorySync(dirPath) {
 }
 
 ensureDirectorySync(LOG_DIR);
+ensureDirectorySync(DATA_DIR);
+ensureDirectorySync(CONTEXT_STORE_DIR);
 ensureDirectorySync(TEMP_ROOT_DIR);
 
 function readLocalConfig() {
@@ -208,9 +214,9 @@ function getNormalizedMimeType(file) {
   return (file?.mimeType || inferMimeTypeFromName(file?.name || "") || "application/octet-stream").toLowerCase();
 }
 
-function canSendRawToGemini(mimeType = "") {
+function canSendRawToGemma(mimeType = "") {
   if (!mimeType) return false;
-  if (DIRECT_GEMINI_MIME_TYPES.has(mimeType)) return true;
+  if (DIRECT_GEMMA_MIME_TYPES.has(mimeType)) return true;
   if (mimeType.startsWith("image/") && ["image/png", "image/jpeg", "image/jpg", "image/webp"].includes(mimeType)) return true;
   return false;
 }
@@ -247,27 +253,180 @@ function shouldConvertOfficeDocumentToPdf(file) {
   return [".doc", ".odt", ".rtf"].includes(ext);
 }
 
-function getGeminiApiKey() {
-  return (
-    process.env.GEMINI_API_KEY ||
-    process.env.GOOGLE_API_KEY ||
-    process.env.API_KEY ||
-    LOCAL_CONFIG.geminiApiKey ||
-    LOCAL_CONFIG.llmApiKey ||
-    ""
-  ).trim();
+function resolveRepoPath(value, fallback) {
+  if (!value) return fallback;
+  return path.isAbsolute(value) ? value : path.join(__dirname, "..", value);
 }
 
-function hasGeminiApiKey() {
-  return Boolean(getGeminiApiKey());
+function parseBool(value, fallback = false) {
+  if (value === undefined || value === null || value === "") return fallback;
+  return !["0", "false", "no", "off"].includes(String(value).trim().toLowerCase());
 }
 
-function pruneOldContexts() {
+function parsePositiveNumber(value, fallback) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+function normalizeDeviceMap(value) {
+  const normalized = String(value || "").trim().toLowerCase();
+  if (!normalized) return "auto";
+  if (["gpu", "cuda", "cuda:0"].includes(normalized)) return "auto";
+  if (["auto", "balanced", "balanced_low_0", "sequential", "cpu"].includes(normalized)) return normalized;
+  return "auto";
+}
+
+function getGemmaConfig() {
+  const config = LOCAL_CONFIG.gemma || {};
+  const modelId = (process.env.GEMMA_MODEL_ID || config.modelId || DEFAULT_GEMMA_MODEL_ID).trim();
+  const modelDir = resolveRepoPath(process.env.GEMMA_MODEL_DIR || config.modelDir, DEFAULT_GEMMA_MODEL_DIR);
+  const runnerPath = resolveRepoPath(process.env.GEMMA_RUNNER_PATH || config.runnerPath, path.join(__dirname, "gemma_runner.py"));
+  const cacheDir = resolveRepoPath(process.env.GEMMA_CACHE_DIR || config.cacheDir || process.env.HF_HOME || process.env.TRANSFORMERS_CACHE, path.join(__dirname, "..", "models", ".cache", "huggingface"));
+  const python = (process.env.GEMMA_PYTHON || config.python || "python").trim();
+  const timeoutMs = parsePositiveNumber(process.env.GEMMA_TIMEOUT_MS || config.timeoutMs, 600000);
+  const maxNewTokens = parsePositiveNumber(process.env.GEMMA_MAX_NEW_TOKENS || config.maxNewTokens, 384);
+  const initialMaxNewTokens = parsePositiveNumber(process.env.GEMMA_INITIAL_MAX_NEW_TOKENS || config.initialMaxNewTokens, Math.min(maxNewTokens, 384));
+  const nodeMaxNewTokens = parsePositiveNumber(process.env.GEMMA_NODE_MAX_NEW_TOKENS || config.nodeMaxNewTokens, Math.min(maxNewTokens, 320));
+  const regenerateMaxNewTokens = parsePositiveNumber(process.env.GEMMA_REGENERATE_MAX_NEW_TOKENS || config.regenerateMaxNewTokens, Math.min(maxNewTokens, 160));
+  const initialContextChars = parsePositiveNumber(process.env.GEMMA_INITIAL_CONTEXT_CHARS || config.initialContextChars, 6000);
+  const nodeContextChars = parsePositiveNumber(process.env.GEMMA_NODE_CONTEXT_CHARS || config.nodeContextChars, 2400);
+  const regenerateContextChars = parsePositiveNumber(process.env.GEMMA_REGENERATE_CONTEXT_CHARS || config.regenerateContextChars, 1600);
+  const deviceMap = normalizeDeviceMap(process.env.GEMMA_DEVICE_MAP || config.deviceMap || "auto");
+  const dtype = (process.env.GEMMA_DTYPE || config.dtype || "float16").trim();
+  const quantization = (process.env.GEMMA_QUANTIZATION || config.quantization || "auto").trim();
+  const gpuMemoryFraction = parsePositiveNumber(process.env.GEMMA_GPU_MEMORY_FRACTION || config.gpuMemoryFraction, 0.58);
+  const gpuMaxMemory = (process.env.GEMMA_GPU_MAX_MEMORY || config.gpuMaxMemory || "").trim();
+  const cpuMaxMemory = (process.env.GEMMA_CPU_MAX_MEMORY || config.cpuMaxMemory || "48GiB").trim();
+  const persistentWorker = parseBool(process.env.GEMMA_PERSISTENT_WORKER ?? config.persistentWorker, true);
+
+  return {
+    provider: "gemma",
+    modelId,
+    modelDir,
+    runnerPath,
+    cacheDir,
+    python,
+    timeoutMs: Number.isFinite(timeoutMs) && timeoutMs > 0 ? timeoutMs : 180000,
+    maxNewTokens,
+    initialMaxNewTokens,
+    nodeMaxNewTokens,
+    regenerateMaxNewTokens,
+    initialContextChars,
+    nodeContextChars,
+    regenerateContextChars,
+    deviceMap,
+    dtype,
+    quantization,
+    gpuMemoryFraction,
+    gpuMaxMemory,
+    cpuMaxMemory,
+    persistentWorker,
+    local: true,
+    cloudFallback: false,
+  };
+}
+
+function hasLocalGemmaModel(config = getGemmaConfig()) {
+  return fs.existsSync(path.join(config.modelDir, "config.json"));
+}
+
+function getProviderHealth() {
+  const config = getGemmaConfig();
+  return {
+    provider: config.provider,
+    model: config.modelId,
+    modelDir: config.modelDir,
+    local: true,
+    modelAvailable: hasLocalGemmaModel(config),
+    runnerPath: config.runnerPath,
+    cacheDir: config.cacheDir,
+    deviceMap: config.deviceMap,
+    dtype: config.dtype,
+    quantization: config.quantization,
+    gpuMemoryFraction: config.gpuMemoryFraction,
+    gpuMaxMemory: config.gpuMaxMemory || null,
+    cpuMaxMemory: config.cpuMaxMemory,
+    persistentWorker: config.persistentWorker,
+    maxNewTokens: {
+      initial: config.initialMaxNewTokens,
+      breakdownNode: config.nodeMaxNewTokens,
+      regenerateNode: config.regenerateMaxNewTokens,
+    },
+    contextChars: {
+      initial: config.initialContextChars,
+      breakdownNode: config.nodeContextChars,
+      regenerateNode: config.regenerateContextChars,
+    },
+    cloudFallback: false,
+    cloudCallCount: 0,
+    deterministicFallback: "local-rules",
+  };
+}
+
+function getContextFilePath(contextId) {
+  const safeId = String(contextId || "").replace(/[^a-zA-Z0-9_-]/g, "");
+  if (!safeId) return null;
+  return path.join(CONTEXT_STORE_DIR, `${safeId}.json`);
+}
+
+async function persistContext(contextId, context) {
+  const filePath = getContextFilePath(contextId);
+  if (!filePath) return;
+  const payload = {
+    ...context,
+    contextId,
+    updatedAt: Date.now(),
+  };
+  contextStore.set(contextId, payload);
+  await fsp.writeFile(filePath, JSON.stringify(payload), "utf8");
+}
+
+async function loadStoredContext(contextId) {
+  if (!contextId) return null;
+  const cached = contextStore.get(contextId);
+  if (cached) return cached;
+
+  const filePath = getContextFilePath(contextId);
+  if (!filePath) return null;
+
+  try {
+    const parsed = JSON.parse(await fsp.readFile(filePath, "utf8"));
+    if (!parsed?.createdAt || Date.now() - parsed.createdAt > CONTEXT_TTL_MS) {
+      await fsp.rm(filePath, { force: true }).catch(() => {});
+      return null;
+    }
+    contextStore.set(contextId, parsed);
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+async function pruneOldContexts() {
   const now = Date.now();
   for (const [key, value] of contextStore.entries()) {
     if (!value?.createdAt || now - value.createdAt > CONTEXT_TTL_MS) {
       contextStore.delete(key);
     }
+  }
+
+  try {
+    const files = await fsp.readdir(CONTEXT_STORE_DIR);
+    await Promise.all(files
+      .filter((name) => name.endsWith(".json"))
+      .map(async (name) => {
+        const filePath = path.join(CONTEXT_STORE_DIR, name);
+        try {
+          const parsed = JSON.parse(await fsp.readFile(filePath, "utf8"));
+          if (!parsed?.createdAt || now - parsed.createdAt > CONTEXT_TTL_MS) {
+            await fsp.rm(filePath, { force: true });
+          }
+        } catch {
+          await fsp.rm(filePath, { force: true }).catch(() => {});
+        }
+      }));
+  } catch (error) {
+    writeLog("error", "context.prune.failed", { error: error.message });
   }
 }
 
@@ -299,10 +458,6 @@ function safeJsonParse(text) {
   }
 
   return null;
-}
-
-function sleep(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function sanitizeTitle(text, fallback = "Uploaded Task") {
@@ -346,7 +501,7 @@ function buildLocalInitialBreakdown(taskInput = "", fileMeta = null) {
       makeStep("fallback-step", 1, "Prepare the needed inputs", "Collect the key information, assets, or references required to execute the task."),
       makeStep("fallback-step", 2, "Execute the first concrete deliverable", "Produce the first visible output so the task starts moving forward."),
     ],
-    source: "fallback",
+    source: "local-rules",
   };
 }
 
@@ -357,7 +512,7 @@ function buildLocalChildBreakdown(targetTitle = "Subtask") {
       makeStep("fallback-child", 1, `Do the core work for ${targetTitle}`, `Complete the main action required for ${targetTitle}.`),
       makeStep("fallback-child", 2, `Review and finalize ${targetTitle}`, `Check that ${targetTitle} is complete and ready to move on.`),
     ],
-    source: "fallback",
+    source: "local-rules",
   };
 }
 
@@ -372,14 +527,53 @@ function buildLocalRegeneratedStep(targetNode, slotIndex = 0) {
       status: "pending",
       children: [],
     },
-    source: "fallback",
+    source: "local-rules",
   };
 }
 
-function buildFilePart(file) {
+function clipTextAroundAnchors(text = "", maxChars = 12000, anchors = []) {
+  const source = String(text || "");
+  if (!source || source.length <= maxChars) return source;
+
+  const normalizedAnchors = anchors
+    .filter((anchor) => typeof anchor === "string" && anchor.trim().length >= 4)
+    .map((anchor) => anchor.replace(/\s+/g, " ").trim().slice(0, 80).toLowerCase());
+
+  const lower = source.toLowerCase();
+  const snippets = [];
+  const used = [];
+  const snippetBudget = Math.max(1200, Math.floor(maxChars / Math.max(1, Math.min(normalizedAnchors.length, 3))));
+
+  for (const anchor of normalizedAnchors.slice(0, 4)) {
+    const idx = lower.indexOf(anchor);
+    if (idx === -1) continue;
+
+    const start = Math.max(0, idx - Math.floor(snippetBudget / 3));
+    const end = Math.min(source.length, start + snippetBudget);
+    if (used.some(([a, b]) => start < b && end > a)) continue;
+    used.push([start, end]);
+    snippets.push(source.slice(start, end).trim());
+  }
+
+  const reserved = snippets.join("\n\n...\n\n").length;
+  const remaining = Math.max(1200, maxChars - reserved - 240);
+  const head = source.slice(0, Math.floor(remaining * 0.65)).trim();
+  const tail = source.slice(Math.max(0, source.length - Math.floor(remaining * 0.35))).trim();
+  const body = [head, ...snippets, tail].filter(Boolean).join("\n\n...\n\n").slice(0, maxChars);
+
+  return `[Excerpted from ${source.length} characters for local performance.]\n${body}`;
+}
+
+function buildFilePart(file, options = {}) {
   if (file?.textContent) {
+    const textContent = clipTextAroundAnchors(
+      file.textContent,
+      options.maxTextChars || 12000,
+      options.anchors || []
+    );
+
     return {
-      text: `\n\n--- Uploaded file content: ${file.originalName || file.name || "uploaded file"} ---\n${file.textContent}\n--- End uploaded file content ---`,
+      text: `\n\n--- Uploaded file content: ${file.originalName || file.name || "uploaded file"} ---\n${textContent}\n--- End uploaded file content ---`,
     };
   }
 
@@ -400,11 +594,11 @@ function getFileSummaryText(file) {
   const originalSize = Number(file.originalSize || file.size || 0);
 
   if (file.wasConvertedToPdf) {
-    return `Uploaded file: ${originalName} (${originalMime}, ${originalSize} bytes). It was converted to PDF for Gemini processing as ${file.name} (${file.size || 0} bytes).`;
+    return `Uploaded file: ${originalName} (${originalMime}, ${originalSize} bytes). It was converted to PDF for local Gemma processing as ${file.name} (${file.size || 0} bytes).`;
   }
 
   if (file.wasExtractedToText) {
-    return `Uploaded file: ${originalName} (${originalMime}, ${originalSize} bytes). It was extracted to text for Gemini processing as ${file.name} (${file.size || 0} bytes).`;
+    return `Uploaded file: ${originalName} (${originalMime}, ${originalSize} bytes). It was extracted to text for local Gemma processing as ${file.name} (${file.size || 0} bytes).`;
   }
 
   return `Uploaded file: ${originalName} (${originalMime}, ${originalSize} bytes).`;
@@ -489,7 +683,7 @@ async function extractDocxToText(file, requestId) {
 
   writeLog("info", "file.docx.extract.start", {
     requestId,
-    message: `Extracting text from ${originalName} for Gemini processing.`,
+    message: `Extracting text from ${originalName} for local Gemma processing.`,
     file: { name: originalName, mimeType: originalMimeType, size: originalSize },
   });
 
@@ -545,7 +739,7 @@ async function extractPptxToText(file, requestId) {
 
   writeLog("info", "file.pptx.extract.start", {
     requestId,
-    message: `Extracting slide text from ${originalName} for Gemini processing.`,
+    message: `Extracting slide text from ${originalName} for local Gemma processing.`,
     file: { name: originalName, mimeType: originalMimeType, size: originalSize },
   });
 
@@ -612,7 +806,7 @@ async function extractSpreadsheetToText(file, requestId) {
 
   writeLog("info", "file.spreadsheet.extract.start", {
     requestId,
-    message: `Extracting spreadsheet text from ${originalName} for Gemini processing.`,
+    message: `Extracting spreadsheet text from ${originalName} for local Gemma processing.`,
     file: { name: originalName, mimeType: originalMimeType, size: originalSize },
   });
 
@@ -679,7 +873,7 @@ async function convertOfficeDocumentToPdf(file, requestId) {
 
   writeLog("info", "file.convert.start", {
     requestId,
-    message: `Converting ${originalName} to PDF for Gemini processing.`,
+    message: `Converting ${originalName} to PDF for local Gemma processing.`,
     file: {
       name: originalName,
       mimeType: originalMimeType,
@@ -759,7 +953,7 @@ async function convertOfficeDocumentToPdf(file, requestId) {
 
     throw new AppError(error.message, {
       statusCode: 400,
-      publicMessage: `Failed to convert ${originalName} to PDF for Gemini processing.`,
+      publicMessage: `Failed to convert ${originalName} to PDF for local Gemma processing.`,
       details: error.message,
     });
   } finally {
@@ -767,7 +961,7 @@ async function convertOfficeDocumentToPdf(file, requestId) {
   }
 }
 
-async function prepareFileForGemini(file, requestId) {
+async function prepareFileForGemma(file, requestId) {
   if (!file?.dataBase64) return null;
 
   const normalizedMimeType = getNormalizedMimeType(file);
@@ -783,11 +977,11 @@ async function prepareFileForGemini(file, requestId) {
     wasExtractedToText: false,
   };
 
-  // PDF and supported images go directly to Gemini native multimodal input.
-  if (canSendRawToGemini(normalizedMimeType)) {
+  // PDF and supported images stay local; supported images are passed to Gemma as pixels.
+  if (canSendRawToGemma(normalizedMimeType)) {
     writeLog("info", "file.prepare.raw", {
       requestId,
-      message: `Using ${normalizedFile.originalName} as a raw Gemini input.`,
+      message: `Using ${normalizedFile.originalName} as a raw local Gemma input.`,
       file: buildFileMetaForLogs(normalizedFile),
     });
     return normalizedFile;
@@ -820,7 +1014,7 @@ async function prepareFileForGemini(file, requestId) {
 
   writeLog("error", "file.prepare.unsupported", {
     requestId,
-    message: `Unsupported upload type for Gemini processing: ${normalizedFile.originalName}.`,
+    message: `Unsupported upload type for local Gemma processing: ${normalizedFile.originalName}.`,
     file: buildFileMetaForLogs(normalizedFile),
   });
 
@@ -831,83 +1025,359 @@ async function prepareFileForGemini(file, requestId) {
   });
 }
 
-async function callGemini(parts, { requestId, operation }) {
-  const apiKey = getGeminiApiKey();
-  if (!apiKey) {
-    writeLog("error", "gemini.key.missing", {
-      requestId,
-      message: "Gemini API key was not found in the environment.",
+function getMaxNewTokensForOperation(config, operation) {
+  if (operation === "breakdown-node") return config.nodeMaxNewTokens;
+  if (operation === "regenerate-node") return config.regenerateMaxNewTokens;
+  return config.initialMaxNewTokens;
+}
+
+function buildGemmaRunnerArgs(config, extraArgs = []) {
+  return [
+    config.runnerPath,
+    "--model-dir",
+    config.modelDir,
+    "--model-id",
+    config.modelId,
+    "--device-map",
+    config.deviceMap,
+    "--dtype",
+    config.dtype,
+    "--quantization",
+    config.quantization,
+    "--gpu-memory-fraction",
+    String(config.gpuMemoryFraction),
+    "--cpu-max-memory",
+    config.cpuMaxMemory,
+    ...(config.gpuMaxMemory ? ["--gpu-max-memory", config.gpuMaxMemory] : []),
+    ...extraArgs,
+  ];
+}
+
+function buildGemmaEnv(config) {
+  return {
+    ...process.env,
+    HF_HOME: config.cacheDir,
+    TRANSFORMERS_CACHE: config.cacheDir,
+    HF_DEACTIVATE_ASYNC_LOAD: "1",
+    HF_ENABLE_PARALLEL_LOADING: "false",
+    HF_PARALLEL_LOADING_WORKERS: "1",
+    PYTHONFAULTHANDLER: "1",
+    PYTORCH_CUDA_ALLOC_CONF: "max_split_size_mb:128",
+    TOKENIZERS_PARALLELISM: "false",
+  };
+}
+
+function getWorkerSignature(config) {
+  return JSON.stringify({
+    python: config.python,
+    runnerPath: config.runnerPath,
+    modelDir: config.modelDir,
+    modelId: config.modelId,
+    deviceMap: config.deviceMap,
+    dtype: config.dtype,
+    quantization: config.quantization,
+    gpuMemoryFraction: config.gpuMemoryFraction,
+    gpuMaxMemory: config.gpuMaxMemory,
+    cpuMaxMemory: config.cpuMaxMemory,
+  });
+}
+
+let gemmaWorker = null;
+
+class GemmaWorker {
+  constructor(config) {
+    this.config = config;
+    this.signature = getWorkerSignature(config);
+    this.pending = new Map();
+    this.stdoutBuffer = "";
+    this.stderrTail = "";
+    this.closed = false;
+    this.proc = spawn(
+      config.python,
+      buildGemmaRunnerArgs(config, ["--serve"]),
+      {
+        windowsHide: true,
+        env: buildGemmaEnv(config),
+        stdio: ["pipe", "pipe", "pipe"],
+      }
+    );
+
+    this.ready = false;
+    this.startupError = null;
+    this.proc.stdout.setEncoding("utf8");
+    this.proc.stderr.setEncoding("utf8");
+    this.proc.stdout.on("data", (chunk) => this.handleStdout(chunk));
+    this.proc.stderr.on("data", (chunk) => {
+      this.stderrTail = (this.stderrTail + chunk).slice(-8000);
     });
-    throw new Error("Gemini API key is missing from the environment.");
+    this.proc.on("error", (error) => {
+      this.startupError = error;
+      this.failAll(error);
+    });
+    this.proc.on("close", (code, signal) => {
+      this.closed = true;
+      const error = new Error(`Local Gemma worker exited code=${code ?? "null"} signal=${signal ?? "null"} ${this.stderrTail}`.trim());
+      this.failAll(error);
+      if (gemmaWorker === this) gemmaWorker = null;
+    });
   }
 
-  const models = ["gemini-3-flash-preview"];
-  let lastError = null;
+  handleStdout(chunk) {
+    this.stdoutBuffer += chunk;
+    const lines = this.stdoutBuffer.split(/\r?\n/);
+    this.stdoutBuffer = lines.pop() || "";
 
-  for (const model of models) {
-    for (let attempt = 1; attempt <= 3; attempt++) {
-      const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`;
-      writeLog("info", "gemini.request.start", {
-        requestId,
-        summary: `${operation} via ${model} attempt ${attempt}.`,
-        model,
-        attempt,
-        operation,
-      });
-
-      const response = await fetch(url, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "x-goog-api-key": apiKey,
-        },
-        body: JSON.stringify({
-          contents: [{ parts }],
-          generationConfig: {
-            temperature: 0.3,
-            responseMimeType: "application/json",
-          },
-        }),
-      });
-
-      if (response.ok) {
-        writeLog("info", "gemini.request.success", {
-          requestId,
-          summary: `${operation} succeeded with ${model} on attempt ${attempt}.`,
-          model,
-          attempt,
-          operation,
-        });
-        return response.json();
-      }
-
-      const errText = await response.text();
-      lastError = errText;
-      writeLog("error", "gemini.request.error", {
-        requestId,
-        message: `${operation} failed with ${model} on attempt ${attempt}.`,
-        model,
-        attempt,
-        operation,
-        status: response.status,
-        error: redactLongText(errText, 1800),
-      });
-
-      if (response.status === 503 && attempt < 3) {
-        await sleep(1200 * attempt);
+    for (const line of lines) {
+      if (!line.trim()) continue;
+      let message;
+      try {
+        message = JSON.parse(line);
+      } catch {
+        this.stderrTail = (this.stderrTail + `\n[stdout] ${line}`).slice(-8000);
         continue;
       }
 
-      if (response.status !== 503) {
-        break;
+      if (message.ready) {
+        this.ready = true;
+        writeLog("info", "gemma.worker.ready", {
+          message: `Local Gemma worker is ready for ${this.config.modelId}.`,
+          model: this.config.modelId,
+        });
+        continue;
+      }
+
+      const pending = this.pending.get(message.requestId);
+      if (!pending) continue;
+      clearTimeout(pending.timeout);
+      this.pending.delete(message.requestId);
+
+      if (message.ok) {
+        pending.resolve(message);
+      } else {
+        const error = new Error(message.error || "Local Gemma worker request failed.");
+        if (message.traceback) {
+          error.stack = message.traceback;
+        }
+        pending.reject(error);
       }
     }
   }
 
-  throw new Error(lastError || "All Gemini requests failed");
+  request(payload, timeoutMs) {
+    if (this.startupError) {
+      return Promise.reject(this.startupError);
+    }
+    if (this.closed || !this.proc?.stdin?.writable) {
+      return Promise.reject(new Error("Local Gemma worker is not writable."));
+    }
+
+    return new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        this.pending.delete(payload.requestId);
+        reject(new Error(`Local Gemma worker timed out after ${timeoutMs}ms.`));
+        this.kill();
+      }, timeoutMs);
+
+      this.pending.set(payload.requestId, { resolve, reject, timeout });
+
+      try {
+        this.proc.stdin.write(`${JSON.stringify(payload)}\n`, "utf8", (error) => {
+          if (!error) return;
+          clearTimeout(timeout);
+          this.pending.delete(payload.requestId);
+          reject(error);
+        });
+      } catch (error) {
+        clearTimeout(timeout);
+        this.pending.delete(payload.requestId);
+        reject(error);
+      }
+    });
+  }
+
+  kill() {
+    if (this.closed) return;
+    this.closed = true;
+    this.proc.kill();
+  }
+
+  failAll(error) {
+    for (const [requestId, pending] of this.pending.entries()) {
+      clearTimeout(pending.timeout);
+      pending.reject(error);
+      this.pending.delete(requestId);
+    }
+  }
+}
+
+async function runGemmaOneShot(config, requestPath, maxNewTokens) {
+  const { stdout, stderr } = await execFileAsync(
+    config.python,
+    [
+      ...buildGemmaRunnerArgs(config),
+      "--request-file",
+      requestPath,
+      "--max-new-tokens",
+      String(maxNewTokens),
+    ],
+    {
+      timeout: config.timeoutMs,
+      maxBuffer: 1024 * 1024 * 20,
+      windowsHide: true,
+      env: buildGemmaEnv(config),
+    }
+  );
+
+  return { stdout, stderr };
+}
+
+function getGemmaWorker(config) {
+  const signature = getWorkerSignature(config);
+  if (gemmaWorker && gemmaWorker.signature === signature && !gemmaWorker.closed) {
+    return gemmaWorker;
+  }
+
+  if (gemmaWorker && !gemmaWorker.closed) {
+    gemmaWorker.kill();
+  }
+
+  gemmaWorker = new GemmaWorker(config);
+  return gemmaWorker;
+}
+
+async function callGemma(parts, { requestId, operation }) {
+  const config = getGemmaConfig();
+  const maxNewTokens = getMaxNewTokensForOperation(config, operation);
+
+  if (!hasLocalGemmaModel(config)) {
+    writeLog("info", "gemma.local.unavailable", {
+      requestId,
+      message: `Local Gemma model was not found at ${config.modelDir}. Using deterministic local fallback.`,
+      model: config.modelId,
+      modelDir: config.modelDir,
+    });
+    throw new Error(`Local Gemma model is unavailable at ${config.modelDir}`);
+  }
+
+  const requestDir = await fsp.mkdtemp(path.join(TEMP_ROOT_DIR, `${requestId}-${operation}-`));
+  const requestPath = path.join(requestDir, "request.json");
+  const startedAt = Date.now();
+
+  await fsp.writeFile(requestPath, JSON.stringify({ parts, requestId, operation }), "utf8");
+
+  try {
+    writeLog("info", "gemma.request.start", {
+      requestId,
+      summary: `${operation} via local ${config.modelId}.`,
+      model: config.modelId,
+      modelDir: config.modelDir,
+      runnerPath: config.runnerPath,
+      python: config.python,
+      cacheDir: config.cacheDir,
+      maxNewTokens,
+      deviceMap: config.deviceMap,
+      gpuMemoryFraction: config.gpuMemoryFraction,
+      operation,
+    });
+
+    if (config.persistentWorker) {
+      try {
+        const worker = getGemmaWorker(config);
+        const parsed = await worker.request({
+          requestId,
+          operation,
+          parts,
+          maxNewTokens,
+        }, config.timeoutMs);
+        const content = typeof parsed?.text === "string" ? parsed.text : "";
+        if (!content.trim()) {
+          throw new Error("Local Gemma worker returned an empty response.");
+        }
+
+        writeLog("info", "gemma.request.success", {
+          requestId,
+          summary: `${operation} succeeded with local ${config.modelId}.`,
+          model: config.modelId,
+          operation,
+          latencyMs: Date.now() - startedAt,
+          worker: "persistent",
+        });
+
+        return {
+          candidates: [{ content: { parts: [{ text: content }] } }],
+          meta: parsed?.meta || {},
+        };
+      } catch (workerError) {
+        const workerTimedOut = /timed out/i.test(workerError.message || "");
+        const canRetryOneShot = !workerTimedOut && (!gemmaWorker || (!gemmaWorker.ready && (gemmaWorker.closed || gemmaWorker.startupError)));
+        writeLog("error", "gemma.worker.failed", {
+          requestId,
+          message: canRetryOneShot
+            ? `Persistent Gemma worker failed; trying one-shot runner.`
+            : `Persistent Gemma worker failed after startup.`,
+          error: redactLongText(workerError.message, 2000),
+          stack: redactLongText(workerError.stack, 4000),
+          operation,
+        });
+        if (gemmaWorker && gemmaWorker.startupError) {
+          gemmaWorker = null;
+        }
+        if (!canRetryOneShot) {
+          throw workerError;
+        }
+      }
+    }
+
+    const { stdout, stderr } = await runGemmaOneShot(config, requestPath, maxNewTokens);
+
+    if (stderr?.trim()) {
+      writeLog("info", "gemma.runner.stderr", {
+        requestId,
+        message: redactLongText(stderr, 1800),
+      });
+    }
+
+    const parsed = safeJsonParse(stdout);
+    const content = typeof parsed?.text === "string" ? parsed.text : "";
+    if (!content.trim()) {
+      throw new Error("Local Gemma runner returned an empty response.");
+    }
+
+    writeLog("info", "gemma.request.success", {
+      requestId,
+      summary: `${operation} succeeded with local ${config.modelId}.`,
+      model: config.modelId,
+      operation,
+      latencyMs: Date.now() - startedAt,
+    });
+
+    return {
+      candidates: [{ content: { parts: [{ text: content }] } }],
+      meta: parsed?.meta || {},
+    };
+  } catch (error) {
+    writeLog("error", "gemma.request.error", {
+      requestId,
+      message: `${operation} failed with local ${config.modelId}.`,
+      model: config.modelId,
+      modelDir: config.modelDir,
+      runnerPath: config.runnerPath,
+      python: config.python,
+      operation,
+      exitCode: error.code ?? null,
+      signal: error.signal ?? null,
+      error: redactLongText(error.message, 4000),
+      stderr: redactLongText(error.stderr || "", 8000),
+      stdout: redactLongText(error.stdout || "", 4000),
+    });
+    throw error;
+  } finally {
+    await fsp.rm(requestDir, { recursive: true, force: true }).catch(() => {});
+  }
 }
 
 async function generateInitialBreakdown({ taskInput, file, requestId }) {
+  const config = getGemmaConfig();
   const instruction = `
 You are a task decomposition engine for a productivity MVP.
 
@@ -915,10 +1385,11 @@ Use the user's typed input and/or uploaded file to infer the overall task and br
 
 Rules:
 - Return VALID JSON only.
+- Return compact JSON only: no markdown, no prose, no comments.
 - Output exactly 3 top-level subtasks.
 - The 3 subtasks must be parallel, non-overlapping, and together cover the full task.
 - Make titles action-oriented and concise.
-- Make descriptions concrete and useful, 1 to 2 sentences max.
+- Make descriptions concrete and useful, 16 words max.
 - Priorities must be 1, 2, 3 in order.
 - estimatedMinutes should be an integer from 5 to 30.
 - status must be "pending".
@@ -951,18 +1422,22 @@ ${getFileSummaryText(file)}
 `.trim();
 
   const parts = [{ text: instruction }];
-  const filePart = buildFilePart(file);
+  const filePart = buildFilePart(file, {
+    maxTextChars: config.initialContextChars,
+    anchors: [taskInput],
+  });
   if (filePart) parts.push(filePart);
 
   try {
-    const data = await callGemini(parts, { requestId, operation: "initial-breakdown" });
+    const data = await callGemma(parts, { requestId, operation: "initial-breakdown" });
     const content = data.candidates?.[0]?.content?.parts?.[0]?.text ?? "";
     const parsed = safeJsonParse(content);
 
     if (!parsed || !Array.isArray(parsed.steps) || parsed.steps.length !== 3) {
-      writeLog("info", "gemini.fallback.initial", {
+      writeLog("info", "gemma.fallback.initial", {
         requestId,
-        message: "Gemini returned an invalid initial breakdown shape. Falling back locally.",
+        message: "Local Gemma returned an invalid initial breakdown shape. Falling back to deterministic rules.",
+        contentPreview: redactLongText(content, 1200),
       });
       return buildLocalInitialBreakdown(taskInput, file);
     }
@@ -979,12 +1454,12 @@ ${getFileSummaryText(file)}
         status: "pending",
         children: [],
       })),
-      source: "gemini",
+      source: "gemma",
     };
   } catch (error) {
-    writeLog("info", "gemini.fallback.initial", {
+    writeLog("info", "gemma.fallback.initial", {
       requestId,
-      message: "Initial breakdown fell back to local generation.",
+      message: "Initial breakdown fell back to deterministic local generation.",
       error: error.message,
     });
     return buildLocalInitialBreakdown(taskInput, file);
@@ -992,17 +1467,19 @@ ${getFileSummaryText(file)}
 }
 
 async function generateNodeBreakdown({ rootContext, targetNode, parentNode, file, requestId }) {
+  const config = getGemmaConfig();
   const instruction = `
 You are decomposing ONE selected subtask into EXACTLY 3 child subtasks.
 
 Rules:
 - Return VALID JSON only.
+- Return compact JSON only: no markdown, no prose, no comments.
 - Stay strictly within the selected subtask's scope.
 - Do NOT expand back out to the whole project or overlap with sibling top-level tasks.
 - Output exactly 3 child subtasks.
 - Make them sequential and concrete.
 - Titles should be concise and action-oriented.
-- Descriptions should be specific and useful, 1 to 2 sentences max.
+- Descriptions should be specific and useful, 16 words max.
 - priority must be 1, 2, 3.
 - estimatedMinutes should be an integer from 5 to 25.
 - status must be "pending".
@@ -1042,18 +1519,27 @@ ${getFileSummaryText(file)}
 `.trim();
 
   const parts = [{ text: instruction }];
-  const filePart = buildFilePart(file);
+  const filePart = buildFilePart(file, {
+    maxTextChars: config.nodeContextChars,
+    anchors: [
+      targetNode?.title,
+      targetNode?.desc,
+      parentNode?.title,
+      rootContext?.rootTitle,
+    ],
+  });
   if (filePart) parts.push(filePart);
 
   try {
-    const data = await callGemini(parts, { requestId, operation: "breakdown-node" });
+    const data = await callGemma(parts, { requestId, operation: "breakdown-node" });
     const content = data.candidates?.[0]?.content?.parts?.[0]?.text ?? "";
     const parsed = safeJsonParse(content);
 
     if (!parsed || !Array.isArray(parsed.steps) || parsed.steps.length !== 3) {
-      writeLog("info", "gemini.fallback.breakdown-node", {
+      writeLog("info", "gemma.fallback.breakdown-node", {
         requestId,
-        message: "Gemini returned an invalid child breakdown shape. Falling back locally.",
+        message: "Local Gemma returned an invalid child breakdown shape. Falling back to deterministic rules.",
+        contentPreview: redactLongText(content, 1200),
       });
       return buildLocalChildBreakdown(targetNode?.title);
     }
@@ -1068,12 +1554,12 @@ ${getFileSummaryText(file)}
         status: "pending",
         children: [],
       })),
-      source: "gemini",
+      source: "gemma",
     };
   } catch (error) {
-    writeLog("info", "gemini.fallback.breakdown-node", {
+    writeLog("info", "gemma.fallback.breakdown-node", {
       requestId,
-      message: "Child breakdown fell back to local generation.",
+      message: "Child breakdown fell back to deterministic local generation.",
       error: error.message,
     });
     return buildLocalChildBreakdown(targetNode?.title);
@@ -1081,6 +1567,7 @@ ${getFileSummaryText(file)}
 }
 
 async function regenerateSingleNode({ rootContext, parentNode, targetNode, siblingNodes, slotIndex, file, requestId }) {
+  const config = getGemmaConfig();
   const siblingSummary = (siblingNodes || [])
     .map((node, index) => `- Slot ${index + 1}: ${node.title} :: ${node.desc || ""}`)
     .join("\n");
@@ -1134,18 +1621,25 @@ ${getFileSummaryText(file)}
 `.trim();
 
   const parts = [{ text: instruction }];
-  const filePart = buildFilePart(file);
+  const filePart = buildFilePart(file, {
+    maxTextChars: config.regenerateContextChars,
+    anchors: [
+      targetNode?.title,
+      targetNode?.desc,
+      parentNode?.title,
+    ],
+  });
   if (filePart) parts.push(filePart);
 
   try {
-    const data = await callGemini(parts, { requestId, operation: "regenerate-node" });
+    const data = await callGemma(parts, { requestId, operation: "regenerate-node" });
     const content = data.candidates?.[0]?.content?.parts?.[0]?.text ?? "";
     const parsed = safeJsonParse(content);
 
     if (!parsed?.step) {
-      writeLog("info", "gemini.fallback.regenerate-node", {
+      writeLog("info", "gemma.fallback.regenerate-node", {
         requestId,
-        message: "Gemini returned an invalid regenerate-node shape. Falling back locally.",
+        message: "Local Gemma returned an invalid regenerate-node shape. Falling back to deterministic rules.",
       });
       return buildLocalRegeneratedStep(targetNode, slotIndex);
     }
@@ -1160,12 +1654,12 @@ ${getFileSummaryText(file)}
         status: "pending",
         children: [],
       },
-      source: "gemini",
+      source: "gemma",
     };
   } catch (error) {
-    writeLog("info", "gemini.fallback.regenerate-node", {
+    writeLog("info", "gemma.fallback.regenerate-node", {
       requestId,
-      message: "Regenerate-node fell back to local generation.",
+      message: "Regenerate-node fell back to deterministic local generation.",
       error: error.message,
     });
     return buildLocalRegeneratedStep(targetNode, slotIndex);
@@ -1245,13 +1739,17 @@ app.post("/api/stats/distraction", (req, res) => {
   res.json(computeStats(data));
 });
 
-app.post("/api/breakdown", async (req, res) => {
-  pruneOldContexts();
+app.get("/api/provider/health", (req, res) => {
+  res.json(getProviderHealth());
+});
 
+app.post("/api/breakdown", async (req, res) => {
   const requestId = crypto.randomUUID();
   const { mode = "initial" } = req.body ?? {};
 
   try {
+    await pruneOldContexts();
+
     writeLog("info", "request.received", {
       requestId,
       mode,
@@ -1291,10 +1789,10 @@ app.post("/api/breakdown", async (req, res) => {
         });
       }
 
-      const processedFile = hasFile ? await prepareFileForGemini(file, requestId) : null;
+      const processedFile = hasFile ? await prepareFileForGemma(file, requestId) : null;
       const contextId = crypto.randomUUID();
 
-      contextStore.set(contextId, {
+      await persistContext(contextId, {
         createdAt: Date.now(),
         taskInput: trimmedTaskInput,
         file: processedFile,
@@ -1323,15 +1821,29 @@ app.post("/api/breakdown", async (req, res) => {
     }
 
     const { contextId, rootContext, targetNode, parentNode, siblingNodes = [] } = req.body ?? {};
-    if (!contextId || !contextStore.has(contextId)) {
-      throw new AppError("The original task context was not found.", {
-        statusCode: 400,
-        publicMessage: "The original task context was not found. Please re-upload and try again.",
+    let storedContext = await loadStoredContext(contextId);
+    if (!storedContext) {
+      storedContext = {
+        createdAt: Date.now(),
+        taskInput: rootContext?.originalTaskInput || rootContext?.rootDescription || rootContext?.rootTitle || "",
+        file: null,
+        recoveredFromPayload: true,
+      };
+      writeLog("info", "context.recovered.from-payload", {
+        requestId,
+        mode,
+        contextId: contextId || null,
+        message: "Original context was not found on disk; continuing with root/task payload only.",
       });
+    } else {
+      storedContext.createdAt = Date.now();
+      storedContext.updatedAt = Date.now();
+      if (contextId) {
+        await persistContext(contextId, storedContext).catch((error) => {
+          writeLog("error", "context.persist.failed", { requestId, contextId, error: error.message });
+        });
+      }
     }
-
-    const storedContext = contextStore.get(contextId);
-    storedContext.createdAt = Date.now();
 
     writeLog("info", "request.user-action", {
       requestId,
@@ -1451,10 +1963,17 @@ app.listen(PORT, () => {
   recoverCrashedSessions();
   startHeartbeat();
   const agent = maybeStartMonitorAgent({ apiBase: `http://localhost:${PORT}` });
-  console.log(`🚀 AI server running at http://localhost:${PORT}`);
-  console.log(`🔐 Gemini API key source: ${hasGeminiApiKey() ? "environment loaded" : "missing"}`);
-  console.log(`📝 Request logs: ${LOG_DIR}`);
+  const provider = getProviderHealth();
+  console.log(`Local AI server running at http://localhost:${PORT}`);
+  console.log(`Gemma provider: ${provider.model} (${provider.modelAvailable ? "model available" : "deterministic fallback until model is downloaded"})`);
+  console.log(`Gemma model directory: ${provider.modelDir}`);
+  console.log(`Cloud fallback: disabled, cloud-call-count=${provider.cloudCallCount}`);
+  console.log(`Request logs: ${LOG_DIR}`);
   if (agent.started) {
-    console.log(`🖥️  Monitor agent restored for active session.`);
+    console.log(`Monitor agent restored for active session.`);
   }
+});
+
+process.on("exit", () => {
+  if (gemmaWorker && !gemmaWorker.closed) gemmaWorker.kill();
 });

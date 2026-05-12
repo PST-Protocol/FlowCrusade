@@ -2,7 +2,7 @@
 
 # FlowCrusade
 
-**AI-powered focus companion for deep work.**
+**Local-first Gemma learning coach for deep work.**
 
 Break any task into steps → monitor your real-time activity → see exactly where your time goes.
 
@@ -10,7 +10,8 @@ Break any task into steps → monitor your real-time activity → see exactly wh
 ![Vite](https://img.shields.io/badge/Vite-7.3-646CFF?logo=vite&logoColor=white&style=flat-square)
 ![Node.js](https://img.shields.io/badge/Node.js-Express-339933?logo=node.js&logoColor=white&style=flat-square)
 ![macOS](https://img.shields.io/badge/Monitor-macOS-000000?logo=apple&logoColor=white&style=flat-square)
-![Gemini](https://img.shields.io/badge/AI-Gemini-4285F4?logo=google&logoColor=white&style=flat-square)
+![Gemma](https://img.shields.io/badge/AI-Gemma_4_E2B-4285F4?logo=google&logoColor=white&style=flat-square)
+![Local](https://img.shields.io/badge/Inference-Local_First-16A34A?style=flat-square)
 
 </div>
 
@@ -20,7 +21,7 @@ Break any task into steps → monitor your real-time activity → see exactly wh
 
 | Feature | Description |
 |---|---|
-| **AI Task Breakdown** | Type a goal or upload a file — Gemini breaks it into 3 subtasks, each drill-downable into 3 more |
+| **Local Gemma Task Breakdown** | Type a goal or upload a file; local Gemma 4 E2B breaks it into 3 subtasks, each drill-downable into 3 more |
 | **Real-time Activity Monitor** | macOS agent reads the active window every 15s and classifies it as focus or distraction |
 | **Live Stats** | Focus minutes, distraction time, streaks, and peak hours — updated instantly via SSE |
 | **Classification Rules** | Edit which apps and domains count as focus or distraction from the Settings panel |
@@ -36,10 +37,10 @@ Break any task into steps → monitor your real-time activity → see exactly wh
   <br/><sub>Enter a task or upload a file to get started</sub>
 </p>
 
-**AI Task Breakdown**
+**Local Gemma Task Breakdown**
 <p align="center">
-  <img src="public/screenshots/breakdown.png" width="760" alt="AI task breakdown tree"/>
-  <br/><sub>Gemini breaks any goal into 3 subtasks, each drill-downable into 3 more</sub>
+  <img src="public/screenshots/breakdown.png" width="760" alt="Local Gemma task breakdown tree"/>
+  <br/><sub>Local Gemma breaks any goal into 3 subtasks, each drill-downable into 3 more</sub>
 </p>
 
 **Focus Mode**
@@ -69,7 +70,10 @@ Break any task into steps → monitor your real-time activity → see exactly wh
 
 - Node.js 18+
 - macOS (for the activity monitor; the rest works on any OS)
-- A [Google Gemini API key](https://aistudio.google.com/app/apikey)
+- Python 3.10+ for local Gemma inference
+- Python packages: `pip install -U torch torchvision accelerate pillow mistral-common` plus source Transformers for Gemma 4 support
+- A local `google/gemma-4-E2B-it` model checkout in `models/gemma-4-E2B-it`
+- Optional: a Hugging Face token with access to the Gemma weights, used only for `npm run download:gemma`
 
 ### 1. Clone and install
 
@@ -85,11 +89,23 @@ npm install
 cp .env.example .env
 ```
 
-Open `.env` and fill in your key:
+Open `.env` and point it at the local model:
 
 ```env
-GEMINI_API_KEY=your_key_here
-PORT=8787          # optional, defaults to 8787
+PORT=8787
+GEMMA_MODEL_ID=google/gemma-4-E2B-it
+GEMMA_MODEL_DIR=./models/gemma-4-E2B-it
+GEMMA_DEVICE_MAP=auto
+GEMMA_GPU_MEMORY_FRACTION=0.58
+GEMMA_PERSISTENT_WORKER=true
+```
+
+The server never calls Gemini or any cloud fallback. If the local model is not present, task breakdown falls back to deterministic local rules. The default local runner keeps one Gemma worker warm, caps GPU placement so 12GB cards have room for generation, and offloads the rest to CPU for lower-end machines.
+
+To download the model into the repo-local directory after setting `HF_TOKEN`:
+
+```bash
+npm run download:gemma
 ```
 
 ### 3. Start the backend
@@ -169,7 +185,8 @@ The backend runs on `http://localhost:8787`.
 
 | Method | Path | Description |
 |---|---|---|
-| `POST` | `/api/breakdown` | AI task breakdown (Gemini) |
+| `POST` | `/api/breakdown` | Local Gemma task breakdown with deterministic fallback |
+| `GET` | `/api/provider/health` | Local Gemma provider status and cloud-call counter |
 | `GET` | `/api/stats` | Daily focus stats |
 | `POST` | `/api/stats/focus-session` | Record a focus session |
 | `POST` | `/api/stats/completed-task` | Record a completed task |
@@ -231,7 +248,7 @@ FlowCrusade/
 
 - **Frontend** — React 19, Vite 7, Tailwind CSS, Lucide icons
 - **Backend** — Node.js, Express, Server-Sent Events
-- **AI** — Google Gemini (task breakdown)
+- **AI** - Local Gemma 4 E2B via Transformers, with deterministic local fallback
 - **Monitor** — macOS `osascript` / `ioreg` (no native addons)
 - **Storage** — localStorage (tasks/notes), JSON files (stats/sessions)
 

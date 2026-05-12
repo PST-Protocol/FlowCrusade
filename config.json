@@ -1,26 +1,17 @@
 {
-  "port": 8787,
   "gemma": {
-    "modelId": "google/gemma-4-E2B-it",
-    "modelDir": "./models/gemma-4-E2B-it",
-    "python": "python",
-    "cacheDir": "./models/.cache/huggingface",
     "deviceMap": "auto",
     "dtype": "float16",
+    "timeoutMs": 600000,
     "maxNewTokens": 512,
     "initialMaxNewTokens": 384,
     "nodeMaxNewTokens": 320,
     "regenerateMaxNewTokens": 160,
-    "timeoutMs": 600000,
     "gpuMemoryFraction": 0.58,
     "cpuMaxMemory": "48GiB",
     "persistentWorker": true,
     "initialContextChars": 6000,
     "nodeContextChars": 2400,
     "regenerateContextChars": 1600
-  },
-  "database": {
-    "provider": "localStorage",
-    "path": "browser"
   }
 }

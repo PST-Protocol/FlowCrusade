@@ -76,12 +76,12 @@ export default function ViewCE({ t, theme, rootTask, path, onBreakdown, onRegene
                   {sub.aiSource && (
                     <span
                       className={`text-[10px] px-2 py-0.5 rounded-full font-bold uppercase tracking-wide ${
-                        sub.aiSource === 'gemini'
+                        sub.aiSource === 'gemma'
                           ? 'bg-indigo-500/10 text-indigo-400 border border-indigo-500/20'
                           : 'bg-amber-500/10 text-amber-500 border border-amber-500/20'
                       }`}
                     >
-                      {sub.aiSource === 'gemini' ? 'AI' : 'Local'}
+                      {sub.aiSource === 'gemma' ? 'Gemma' : 'Rules'}
                     </span>
                   )}
                 </div>
@@ -132,7 +132,7 @@ export default function ViewCE({ t, theme, rootTask, path, onBreakdown, onRegene
           <div className={`text-center py-16 border-2 border-dashed rounded-3xl ${t.border} ${t.bgCard}`}>
             <p className={`mb-6 text-lg ${t.textMuted}`}>No sub-steps yet. Need help starting?</p>
             <button onClick={() => onBreakdown(currentContext.id)} className={`px-8 py-3 font-bold rounded-xl transition-colors ${t.primaryBtn}`}>
-              Auto-Breakdown via AI
+              Auto-Breakdown
             </button>
           </div>
         )}

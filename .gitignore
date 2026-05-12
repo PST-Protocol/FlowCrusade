@@ -39,6 +39,8 @@ ENV/
 
 # Runtime data (generated at startup)
 server/data/
+models/
+*.safetensors
 
 # Environment / secrets
 .env
