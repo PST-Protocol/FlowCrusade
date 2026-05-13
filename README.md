@@ -21,7 +21,7 @@ Break any task into steps → monitor your real-time activity → see exactly wh
 
 | Feature | Description |
 |---|---|
-| **Local Gemma Task Breakdown** | Type a goal or upload a file; local Gemma 4 E2B breaks it into 3 subtasks, each drill-downable into 3 more |
+| **Local Gemma Task Breakdown** | Type a goal or upload Word/PDF, screenshots, or handwritten photos; local Gemma 4 E2B breaks it into 3 subtasks, each drill-downable into 3 more |
 | **Real-time Activity Monitor** | macOS agent reads the active window every 15s and classifies it as focus or distraction |
 | **Live Stats** | Focus minutes, distraction time, streaks, and peak hours — updated instantly via SSE |
 | **Classification Rules** | Edit which apps and domains count as focus or distraction from the Settings panel |
@@ -102,10 +102,18 @@ GEMMA_PERSISTENT_WORKER=true
 
 The server never calls Gemini or any cloud fallback. If the local model is not present, task breakdown falls back to deterministic local rules. The default local runner keeps one Gemma worker warm, caps GPU placement so 12GB cards have room for generation, and offloads the rest to CPU for lower-end machines.
 
+Upload intake supports text, Word/Office documents, PDFs, and native image inputs for screenshots or handwritten photos (`PNG`, `JPG/JPEG`, `WebP`, `BMP`, `GIF`, `TIFF`). Image uploads are decoded locally and passed to Gemma as pixels rather than through an OCR-only preprocessing step.
+
 To download the model into the repo-local directory after setting `HF_TOKEN`:
 
 ```bash
 npm run download:gemma
+```
+
+To verify the no-model image intake wiring:
+
+```bash
+npm run test:image-pipeline
 ```
 
 ### 3. Start the backend

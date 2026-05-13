@@ -50,10 +50,33 @@ const SUPPORTED_TEXT_MIME_TYPES = new Set([
 
 const DIRECT_GEMMA_MIME_TYPES = new Set([
   "application/pdf",
+]);
+
+const NATIVE_IMAGE_MIME_TYPES = new Set([
   "image/png",
   "image/jpeg",
   "image/jpg",
+  "image/pjpeg",
+  "image/x-png",
   "image/webp",
+  "image/bmp",
+  "image/gif",
+  "image/tiff",
+  "image/tif",
+  "image/apng",
+]);
+
+const IMAGE_FILE_EXTENSIONS = new Set([
+  ".png",
+  ".jpg",
+  ".jpeg",
+  ".jfif",
+  ".webp",
+  ".bmp",
+  ".gif",
+  ".tif",
+  ".tiff",
+  ".apng",
 ]);
 
 const DOCX_MIME_TYPES = new Set([
@@ -156,6 +179,9 @@ function buildFileMetaForLogs(file) {
     size: Number(file.originalSize || file.size || 0),
     processedSize: Number(file.size || 0),
     wasConvertedToPdf: Boolean(file.wasConvertedToPdf),
+    wasExtractedToText: Boolean(file.wasExtractedToText),
+    inputKind: file.inputKind || null,
+    extractionMethod: file.extractionMethod || null,
   };
 }
 
@@ -192,17 +218,23 @@ function inferMimeTypeFromName(filename = "") {
       return "image/png";
     case ".jpg":
     case ".jpeg":
+    case ".jfif":
       return "image/jpeg";
     case ".gif":
       return "image/gif";
     case ".webp":
       return "image/webp";
+    case ".bmp":
+      return "image/bmp";
+    case ".tif":
+    case ".tiff":
+      return "image/tiff";
+    case ".apng":
+      return "image/apng";
     case ".heic":
       return "image/heic";
     case ".heif":
       return "image/heif";
-    case ".bmp":
-      return "image/bmp";
     case ".svg":
       return "image/svg+xml";
     default:
@@ -211,14 +243,38 @@ function inferMimeTypeFromName(filename = "") {
 }
 
 function getNormalizedMimeType(file) {
-  return (file?.mimeType || inferMimeTypeFromName(file?.name || "") || "application/octet-stream").toLowerCase();
+  const explicitMime = String(file?.mimeType || "").trim().toLowerCase();
+  const inferredMime = inferMimeTypeFromName(file?.name || "").toLowerCase();
+  const mimeType = explicitMime && explicitMime !== "application/octet-stream"
+    ? explicitMime
+    : inferredMime;
+
+  switch (mimeType) {
+    case "image/jpg":
+    case "image/pjpeg":
+      return "image/jpeg";
+    case "image/x-png":
+      return "image/png";
+    case "image/tif":
+      return "image/tiff";
+    default:
+      return mimeType || "application/octet-stream";
+  }
+}
+
+function isNativeImageMimeType(mimeType = "") {
+  return NATIVE_IMAGE_MIME_TYPES.has(getNormalizedMimeType({ mimeType }));
+}
+
+function isImageLikeFile(file) {
+  const mimeType = getNormalizedMimeType(file);
+  const ext = path.extname(file?.name || "").toLowerCase();
+  return mimeType.startsWith("image/") || IMAGE_FILE_EXTENSIONS.has(ext);
 }
 
 function canSendRawToGemma(mimeType = "") {
-  if (!mimeType) return false;
-  if (DIRECT_GEMMA_MIME_TYPES.has(mimeType)) return true;
-  if (mimeType.startsWith("image/") && ["image/png", "image/jpeg", "image/jpg", "image/webp"].includes(mimeType)) return true;
-  return false;
+  const normalizedMimeType = getNormalizedMimeType({ mimeType });
+  return DIRECT_GEMMA_MIME_TYPES.has(normalizedMimeType) || isNativeImageMimeType(normalizedMimeType);
 }
 
 function isTextFile(file) {
@@ -484,6 +540,7 @@ function makeStep(idPrefix, index, title, desc) {
 
 function buildLocalInitialBreakdown(taskInput = "", fileMeta = null) {
   const sourceLabel = taskInput?.trim() || fileMeta?.originalName || fileMeta?.name || "uploaded task";
+  const isNativeImage = fileMeta?.inputKind === "native-image";
   const title = sanitizeTitle(
     taskInput?.trim() ||
       (fileMeta?.originalName || fileMeta?.name || "Uploaded Task").replace(/\.[^.]+$/, "") ||
@@ -491,7 +548,20 @@ function buildLocalInitialBreakdown(taskInput = "", fileMeta = null) {
   );
   const rootDescription = taskInput?.trim()
     ? `Complete: ${taskInput.trim()}`
-    : `Work through the uploaded file${fileMeta?.originalName || fileMeta?.name ? ` (${fileMeta.originalName || fileMeta.name})` : ""} and turn it into an actionable plan.`;
+    : `Work through the uploaded ${isNativeImage ? "image" : "file"}${fileMeta?.originalName || fileMeta?.name ? ` (${fileMeta.originalName || fileMeta.name})` : ""} and turn it into an actionable plan.`;
+
+  if (isNativeImage) {
+    return {
+      rootTitle: title,
+      rootDescription,
+      steps: [
+        makeStep("fallback-image", 0, "Inspect the visible requirements", `Review the screenshot or photo and note the clearest task details in ${sourceLabel}.`),
+        makeStep("fallback-image", 1, "List deadlines and deliverables", "Write down any dates, deliverables, and unclear handwritten items you can verify."),
+        makeStep("fallback-image", 2, "Start the first tiny action", "Open the work area and complete the first visible requirement from the image."),
+      ],
+      source: "local-rules",
+    };
+  }
 
   return {
     rootTitle: title,
@@ -593,6 +663,10 @@ function getFileSummaryText(file) {
   const originalMime = file.originalMimeType || file.mimeType || "unknown mime";
   const originalSize = Number(file.originalSize || file.size || 0);
 
+  if (file.inputKind === "native-image") {
+    return `Uploaded image: ${originalName} (${originalMime}, ${originalSize} bytes). It is passed to local Gemma as native pixels, so inspect screenshots, photos, and handwriting directly. If handwriting is unclear, prefer uncertainty over inventing details.`;
+  }
+
   if (file.wasConvertedToPdf) {
     return `Uploaded file: ${originalName} (${originalMime}, ${originalSize} bytes). It was converted to PDF for local Gemma processing as ${file.name} (${file.size || 0} bytes).`;
   }
@@ -672,6 +746,8 @@ async function extractTextFile(file, requestId) {
     originalSize,
     wasExtractedToText: true,
     wasConvertedToPdf: false,
+    inputKind: "text-file",
+    extractionMethod: "text-read",
   };
 }
 
@@ -713,6 +789,8 @@ async function extractDocxToText(file, requestId) {
       originalSize,
       wasExtractedToText: true,
       wasConvertedToPdf: false,
+      inputKind: "office-document",
+      extractionMethod: "document-parse",
     };
   } catch (error) {
     writeLog("error", "file.docx.extract.failed", {
@@ -780,6 +858,8 @@ async function extractPptxToText(file, requestId) {
       originalSize,
       wasExtractedToText: true,
       wasConvertedToPdf: false,
+      inputKind: "office-document",
+      extractionMethod: "document-parse",
     };
   } catch (error) {
     writeLog("error", "file.pptx.extract.failed", {
@@ -840,6 +920,8 @@ async function extractSpreadsheetToText(file, requestId) {
       originalSize,
       wasExtractedToText: true,
       wasConvertedToPdf: false,
+      inputKind: "office-document",
+      extractionMethod: "document-parse",
     };
   } catch (error) {
     writeLog("error", "file.spreadsheet.extract.failed", {
@@ -937,6 +1019,9 @@ async function convertOfficeDocumentToPdf(file, requestId) {
       originalMimeType,
       originalSize,
       wasConvertedToPdf: true,
+      wasExtractedToText: false,
+      inputKind: "pdf-document",
+      extractionMethod: "office-pipeline",
     };
   } catch (error) {
     writeLog("error", "file.convert.failed", {
@@ -965,6 +1050,7 @@ async function prepareFileForGemma(file, requestId) {
   if (!file?.dataBase64) return null;
 
   const normalizedMimeType = getNormalizedMimeType(file);
+  const isNativeImage = isNativeImageMimeType(normalizedMimeType);
   const normalizedFile = {
     name: file.name || "uploaded-file",
     mimeType: normalizedMimeType,
@@ -979,12 +1065,35 @@ async function prepareFileForGemma(file, requestId) {
 
   // PDF and supported images stay local; supported images are passed to Gemma as pixels.
   if (canSendRawToGemma(normalizedMimeType)) {
+    normalizedFile.inputKind = isNativeImage ? "native-image" : "pdf-document";
+    normalizedFile.extractionMethod = isNativeImage ? "native-multimodal" : "document-parse";
+
     writeLog("info", "file.prepare.raw", {
       requestId,
-      message: `Using ${normalizedFile.originalName} as a raw local Gemma input.`,
+      message: isNativeImage
+        ? `Using ${normalizedFile.originalName} as a native image input for local Gemma.`
+        : `Using ${normalizedFile.originalName} as a raw local Gemma input.`,
       file: buildFileMetaForLogs(normalizedFile),
     });
     return normalizedFile;
+  }
+
+  if (isImageLikeFile(normalizedFile)) {
+    writeLog("error", "file.prepare.unsupported-image", {
+      requestId,
+      message: `Unsupported image type for local Gemma processing: ${normalizedFile.originalName}.`,
+      file: buildFileMetaForLogs({
+        ...normalizedFile,
+        inputKind: "unsupported-image",
+        extractionMethod: "unsupported",
+      }),
+    });
+
+    throw new AppError("Unsupported image type", {
+      statusCode: 400,
+      publicMessage: `Unsupported image type: ${normalizedFile.originalName}. Please upload screenshots or handwritten photos as PNG, JPG/JPEG, WebP, BMP, GIF, or TIFF.`,
+      details: `Unsupported mime type: ${normalizedMimeType}`,
+    });
   }
 
   // TXT/MD/CSV/JSON/XML/HTML/YAML are read into the prompt as text.
@@ -1020,7 +1129,7 @@ async function prepareFileForGemma(file, requestId) {
 
   throw new AppError("Unsupported upload type", {
     statusCode: 400,
-    publicMessage: `Unsupported file type: ${normalizedFile.originalName}. Please upload PDF, PNG/JPG/WebP, TXT/MD, DOCX, PPTX, XLSX, or legacy DOC/RTF/ODT files.`,
+    publicMessage: `Unsupported file type: ${normalizedFile.originalName}. Please upload PDF, PNG/JPG/WebP/BMP/GIF/TIFF screenshots or photos, TXT/MD, DOCX, PPTX, XLSX, or legacy DOC/RTF/ODT files.`,
     details: `Unsupported mime type: ${normalizedMimeType}`,
   });
 }
@@ -1029,6 +1138,14 @@ function getMaxNewTokensForOperation(config, operation) {
   if (operation === "breakdown-node") return config.nodeMaxNewTokens;
   if (operation === "regenerate-node") return config.regenerateMaxNewTokens;
   return config.initialMaxNewTokens;
+}
+
+function requestHasNativeImageInput(parts = []) {
+  return parts.some((part) => {
+    const inlineData = part?.inlineData || part?.inline_data;
+    const mimeType = String(inlineData?.mimeType || inlineData?.mime_type || "").toLowerCase();
+    return mimeType.startsWith("image/");
+  });
 }
 
 function buildGemmaRunnerArgs(config, extraArgs = []) {
@@ -1062,6 +1179,8 @@ function buildGemmaEnv(config) {
     HF_ENABLE_PARALLEL_LOADING: "false",
     HF_PARALLEL_LOADING_WORKERS: "1",
     PYTHONFAULTHANDLER: "1",
+    PYTHONIOENCODING: "utf-8",
+    PYTHONUTF8: "1",
     PYTORCH_CUDA_ALLOC_CONF: "max_split_size_mb:128",
     TOKENIZERS_PARALLELISM: "false",
   };
@@ -1262,6 +1381,7 @@ async function callGemma(parts, { requestId, operation }) {
   const requestDir = await fsp.mkdtemp(path.join(TEMP_ROOT_DIR, `${requestId}-${operation}-`));
   const requestPath = path.join(requestDir, "request.json");
   const startedAt = Date.now();
+  const hasNativeImageInput = requestHasNativeImageInput(parts);
 
   await fsp.writeFile(requestPath, JSON.stringify({ parts, requestId, operation }), "utf8");
 
@@ -1280,7 +1400,7 @@ async function callGemma(parts, { requestId, operation }) {
       operation,
     });
 
-    if (config.persistentWorker) {
+    if (config.persistentWorker && !hasNativeImageInput) {
       try {
         const worker = getGemmaWorker(config);
         const parsed = await worker.request({
@@ -1326,6 +1446,14 @@ async function callGemma(parts, { requestId, operation }) {
           throw workerError;
         }
       }
+    }
+
+    if (config.persistentWorker && hasNativeImageInput) {
+      writeLog("info", "gemma.worker.skipped", {
+        requestId,
+        message: "Using one-shot Gemma runner for native image input to avoid Gemma4Processor persistent-worker tokenizer instability.",
+        operation,
+      });
     }
 
     const { stdout, stderr } = await runGemmaOneShot(config, requestPath, maxNewTokens);
@@ -1395,6 +1523,8 @@ Rules:
 - status must be "pending".
 - children must be [].
 - If the typed input is empty, infer the task from the uploaded file.
+- If the upload is a screenshot, handwritten photo, or other image, inspect the pixels directly for visible deadlines, deliverables, rubric items, and course context.
+- For handwriting or blurry screenshots, use only legible details and reflect uncertainty in rootDescription instead of inventing facts.
 - rootTitle should be concise and UI-friendly.
 - rootDescription should summarize the goal and any key constraints you can infer.
 
@@ -1476,6 +1606,7 @@ Rules:
 - Return compact JSON only: no markdown, no prose, no comments.
 - Stay strictly within the selected subtask's scope.
 - Do NOT expand back out to the whole project or overlap with sibling top-level tasks.
+- If the original upload is an image, keep using the visible screenshot/photo content as context.
 - Output exactly 3 child subtasks.
 - Make them sequential and concrete.
 - Titles should be concise and action-oriented.
@@ -1582,6 +1713,7 @@ Rules:
 - Keep it appropriate for slot ${slotIndex + 1} among its siblings.
 - Do NOT absorb or duplicate the responsibilities of sibling steps.
 - Do NOT rewrite the whole plan.
+- If the original upload is an image, keep the regenerated step grounded in visible screenshot/photo details.
 - Make the wording clearer and more specific.
 - status must be "pending".
 - children must be [].

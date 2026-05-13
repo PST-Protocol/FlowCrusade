@@ -14,6 +14,7 @@ import importlib
 import io
 import json
 import os
+import re
 import sys
 import time
 import traceback
@@ -21,9 +22,56 @@ from contextlib import nullcontext
 from pathlib import Path
 
 
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+if hasattr(sys.stderr, "reconfigure"):
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+
+
+SUPPORTED_IMAGE_MIME_TYPES = {
+    "image/png",
+    "image/jpeg",
+    "image/jpg",
+    "image/pjpeg",
+    "image/webp",
+    "image/bmp",
+    "image/gif",
+    "image/tiff",
+    "image/tif",
+    "image/apng",
+}
+MAX_IMAGE_SIDE = 1800
+
+
 def load_request(path: Path) -> dict:
     with path.open("r", encoding="utf-8-sig") as handle:
         return json.load(handle)
+
+
+def normalize_image_for_model(raw: bytes, mime_type: str):
+    from PIL import Image, ImageOps
+
+    if mime_type in {"image/heic", "image/heif"}:
+        try:
+            from pillow_heif import register_heif_opener
+
+            register_heif_opener()
+        except Exception as exc:
+            raise RuntimeError(
+                "HEIC/HEIF images require pillow-heif. Convert the photo to JPG/PNG or install pillow-heif."
+            ) from exc
+
+    with Image.open(io.BytesIO(raw)) as opened:
+        image = ImageOps.exif_transpose(opened)
+        image.load()
+
+    if image.mode != "RGB":
+        image = image.convert("RGB")
+
+    if max(image.size) > MAX_IMAGE_SIDE:
+        image.thumbnail((MAX_IMAGE_SIDE, MAX_IMAGE_SIDE))
+
+    return image.copy()
 
 
 def build_prompt_and_images(parts: list[dict]) -> tuple[str, list[object]]:
@@ -40,16 +88,22 @@ def build_prompt_and_images(parts: list[dict]) -> tuple[str, list[object]]:
             continue
 
         mime_type = inline_data.get("mimeType") or inline_data.get("mime_type") or "application/octet-stream"
+        mime_type = str(mime_type or "application/octet-stream").lower()
         if mime_type.startswith("image/"):
-            try:
-                from PIL import Image
+            if mime_type not in SUPPORTED_IMAGE_MIME_TYPES and mime_type not in {"image/heic", "image/heif"}:
+                raise RuntimeError(f"Unsupported native image input: {mime_type}")
 
+            try:
                 raw = base64.b64decode(inline_data.get("data") or "")
-                image = Image.open(io.BytesIO(raw)).convert("RGB")
+                image = normalize_image_for_model(raw, mime_type)
                 images.append(image)
-                text_chunks.append(f"[Image input {len(images)}: {mime_type}]")
+                width, height = image.size
+                text_chunks.append(
+                    f"[Native image input {len(images)}: {mime_type}, {width}x{height}. "
+                    "Inspect screenshots, photos, and handwriting directly.]"
+                )
             except Exception as exc:  # pragma: no cover - defensive runtime reporting
-                text_chunks.append(f"[Image input could not be decoded: {mime_type}, {exc}]")
+                raise RuntimeError(f"Native image input could not be decoded: {mime_type}, {exc}") from exc
         else:
             text_chunks.append(f"[Uploaded file kept local but not passed as pixels: {mime_type}]")
 
@@ -366,48 +420,82 @@ def tokenize_messages(processor, messages: list[dict], images: list[object]):
                 "attention_mask": torch.ones_like(input_ids),
             }
 
+    rendered = processor.apply_chat_template(
+        messages,
+        add_generation_prompt=True,
+        tokenize=False,
+    )
+    if isinstance(rendered, list):
+        rendered = "\n".join(str(item) for item in rendered)
+
     try:
-        return processor.apply_chat_template(
-            messages,
-            add_generation_prompt=True,
-            tokenize=True,
-            return_dict=True,
+        return processor(
+            images=images,
+            text=[str(rendered)],
             return_tensors="pt",
         )
     except Exception as exc:
-        if images or "TextEncodeInput" not in str(exc):
-            raise
+        if "TextEncodeInput" not in str(exc):
+            raise RuntimeError(f"Gemma image/text processor failed: {type(exc).__name__}: {exc}") from exc
 
-        rendered = processor.apply_chat_template(
-            messages,
-            add_generation_prompt=True,
-            tokenize=False,
-        )
-        if isinstance(rendered, list):
-            rendered = "\n".join(str(item) for item in rendered)
-
-        tokenizer = getattr(processor, "tokenizer", processor)
         try:
-            return tokenizer(str(rendered), return_tensors="pt")
-        except Exception as tokenizer_exc:
-            if "TextEncodeInput" not in str(tokenizer_exc):
-                raise
+            return processor(
+                images=images,
+                text=str(rendered),
+                return_tensors="pt",
+            )
+        except Exception as retry_exc:
+            try:
+                return build_manual_image_text_inputs(processor, str(rendered), images)
+            except Exception as manual_exc:
+                raise RuntimeError(
+                    "Gemma image/text processor failed after string retry and manual token fallback: "
+                    f"{type(manual_exc).__name__}: {manual_exc}"
+                ) from manual_exc
 
-            import torch
 
-            token_ids = tokenizer.encode(str(rendered), add_special_tokens=False)
-            input_ids = torch.tensor([token_ids], dtype=torch.long)
-            return {
-                "input_ids": input_ids,
-                "attention_mask": torch.ones_like(input_ids),
-            }
+def build_manual_image_text_inputs(processor, rendered: str, images: list[object]):
+    """Fallback for Gemma4Processor tokenizer edge cases on image prompts."""
+    import torch
+
+    image_inputs = processor.image_processor(images, return_tensors="pt")
+    num_soft_tokens = image_inputs.pop("num_soft_tokens_per_image", None)
+    if num_soft_tokens is None:
+        raise RuntimeError("Gemma image processor did not return num_soft_tokens_per_image.")
+
+    image_token = getattr(processor, "image_token", "<|image|>")
+    boi_token = getattr(processor, "boi_token", "<|image>")
+    eoi_token = getattr(processor, "eoi_token", "<image|>")
+
+    replacements = [
+        f"{boi_token}{image_token * int(token_count.item() if hasattr(token_count, 'item') else token_count)}{eoi_token}"
+        for token_count in num_soft_tokens
+    ]
+    replacement_iter = iter(replacements)
+    expanded_text = re.sub(re.escape(image_token), lambda _: next(replacement_iter), str(rendered))
+
+    tokenizer = getattr(processor, "tokenizer", processor)
+    try:
+        text_inputs = tokenizer(text=[expanded_text], return_tensors="pt")
+    except Exception:
+        input_ids = tokenizer.encode(expanded_text, add_special_tokens=False, return_tensors="pt")
+        text_inputs = {
+            "input_ids": input_ids,
+            "attention_mask": torch.ones_like(input_ids),
+        }
+
+    if hasattr(processor, "create_mm_token_type_ids"):
+        text_inputs["mm_token_type_ids"] = processor.create_mm_token_type_ids(text_inputs["input_ids"])
+
+    return {**text_inputs, **image_inputs}
 
 
 def generate(processor, model, prompt: str, images: list[object], max_new_tokens: int) -> str:
     prompt = str(prompt or "")
     if images:
-        content: list[dict] = [{"type": "text", "text": prompt}]
-        content.extend({"type": "image", "image": image} for image in images)
+        image_token = getattr(processor, "image_token", "<|image|>")
+        image_placeholders = "\n".join(str(image_token) for _ in images)
+        content = f"{prompt}\n\n{image_placeholders}".strip()
         messages = [{"role": "user", "content": content}]
     else:
         messages = [{"role": "user", "content": prompt}]

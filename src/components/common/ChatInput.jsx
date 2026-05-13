@@ -1,21 +1,21 @@
-import React, { useState, useEffect, useRef, useMemo } from 'react';
-import { 
-  Calendar as CalendarIcon, BarChart2, Activity, Plus, Mic, Send, 
-  ChevronRight, Home, CheckCircle, Clock, RefreshCw, 
-  X, Edit3, Trash2, Zap, Play, Pause, RotateCcw,
-  Paperclip, ArrowLeft, Settings as SettingsIcon,
-  Moon, Sun, Bell, Database, Key, ShieldAlert,
-  ChevronDown, ChevronUp, ChevronLeft, Users, MapPin, Trophy, Ticket,
-  Menu, PanelLeftClose
-} from 'lucide-react';
+import React, { useEffect, useMemo, useRef } from 'react';
+import { Mic, Paperclip, Send, X } from 'lucide-react';
 
+import { SUPPORTED_UPLOAD_ACCEPT, getUploadKindLabel, isNativeImageFile } from '../../utils/file';
 
 export default function ChatInput({ t, theme, value, onChange, file, onFileSelect, onFileClear, onSubmit, placeholder, isSubmitting = false }) {
   const fileInputRef = useRef(null);
   const canSend = !!value.trim() || !!file;
+  const fileIsImage = isNativeImageFile(file);
+  const selectedKindLabel = getUploadKindLabel(file);
+  const previewUrl = useMemo(() => (fileIsImage ? URL.createObjectURL(file) : null), [file, fileIsImage]);
   const disabledSendCls = theme === 'dark'
     ? 'bg-white/5 text-gray-500'
     : 'bg-slate-200 text-slate-400';
+
+  useEffect(() => () => {
+    if (previewUrl) URL.revokeObjectURL(previewUrl);
+  }, [previewUrl]);
 
   return (
     <div className="w-full max-w-3xl mx-auto">
@@ -23,7 +23,7 @@ export default function ChatInput({ t, theme, value, onChange, file, onFileSelec
         <input
           ref={fileInputRef}
           type="file"
-          accept=".pdf,.doc,.docx,.odt,.rtf,.txt,.md,.csv,.json,.xml,image/*"
+          accept={SUPPORTED_UPLOAD_ACCEPT}
           className="hidden"
           onChange={(e) => {
             const selected = e.target.files?.[0];
@@ -32,7 +32,7 @@ export default function ChatInput({ t, theme, value, onChange, file, onFileSelec
           }}
         />
 
-        <button onClick={() => fileInputRef.current?.click()} className={`p-3 rounded-full transition-colors shrink-0 ${t.textMuted} hover:bg-indigo-500/10 hover:text-indigo-400`} title="Upload File">
+        <button onClick={() => fileInputRef.current?.click()} className={`p-3 rounded-full transition-colors shrink-0 ${t.textMuted} hover:bg-indigo-500/10 hover:text-indigo-400`} title="Upload file, screenshot, or photo">
           <Paperclip className="w-5 h-5" />
         </button>
 
@@ -61,9 +61,18 @@ export default function ChatInput({ t, theme, value, onChange, file, onFileSelec
 
       {file && (
         <div className={`mt-3 flex items-center justify-between gap-3 rounded-2xl border px-4 py-3 ${theme === 'dark' ? 'bg-white/5 border-white/10' : 'bg-white border-slate-200'}`}>
-          <div className="min-w-0">
-            <div className={`text-sm font-semibold truncate ${t.textMain}`}>{file.name}</div>
-            <div className={`text-xs ${t.textMuted}`}>{file.type || 'Unknown type'} · {Math.max(1, Math.round((file.size || 0) / 1024))} KB</div>
+          <div className="min-w-0 flex items-center gap-3">
+            {previewUrl && (
+              <img
+                src={previewUrl}
+                alt="Selected upload preview"
+                className="h-12 w-12 rounded-xl object-cover border border-black/10 shrink-0"
+              />
+            )}
+            <div className="min-w-0">
+              <div className={`text-sm font-semibold truncate ${t.textMain}`}>{file.name}</div>
+              <div className={`text-xs ${t.textMuted}`}>{selectedKindLabel} · {file.type || 'Unknown type'} · {Math.max(1, Math.round((file.size || 0) / 1024))} KB</div>
+            </div>
           </div>
           <button
             type="button"
@@ -78,4 +87,3 @@ export default function ChatInput({ t, theme, value, onChange, file, onFileSelec
     </div>
   );
 }
-
