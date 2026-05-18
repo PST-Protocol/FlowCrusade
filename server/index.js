@@ -19,6 +19,7 @@ import monitorRouter from "./monitor/routes.js";
 import { recoverCrashedSessions } from "./monitor/store.js";
 import { startHeartbeat } from "./monitor/stream.js";
 import { maybeStartMonitorAgent } from "./monitor/agent.js";
+import { inferText, isOllamaAvailable, hasGoogleApiKey, getProviderInfo } from "./gemmaProvider.js";
 
 dotenv.config({ override: true });
 
@@ -388,6 +389,7 @@ function hasLocalGemmaModel(config = getGemmaConfig()) {
 
 function getProviderHealth() {
   const config = getGemmaConfig();
+  const pInfo = getProviderInfo();
   return {
     provider: config.provider,
     model: config.modelId,
@@ -413,8 +415,10 @@ function getProviderHealth() {
       breakdownNode: config.nodeContextChars,
       regenerateNode: config.regenerateContextChars,
     },
-    cloudFallback: false,
-    cloudCallCount: 0,
+    cloudFallback: pInfo.hasGoogleKey,
+    cloudCallCount: pInfo.cloudCallCount,
+    googleApiKeySet: pInfo.hasGoogleKey,
+    ollamaUrl: pInfo.ollamaUrl,
     deterministicFallback: "local-rules",
   };
 }
@@ -1364,9 +1368,48 @@ function getGemmaWorker(config) {
   return gemmaWorker;
 }
 
+async function callGemmaViaProvider(parts, { requestId, operation, maxNewTokens }) {
+  // Build a plain text prompt from the parts array
+  const promptText = parts.map((p) => {
+    if (typeof p?.text === "string") return p.text;
+    if (p?.inlineData) return "[image attached]";
+    return "";
+  }).filter(Boolean).join("\n\n");
+
+  const result = await inferText(promptText, { maxTokens: maxNewTokens, requestId, operation });
+  if (!result) return null;
+
+  return {
+    candidates: [{ content: { parts: [{ text: result.text }] } }],
+    meta: result.meta || {},
+  };
+}
+
 async function callGemma(parts, { requestId, operation }) {
   const config = getGemmaConfig();
   const maxNewTokens = getMaxNewTokensForOperation(config, operation);
+
+  // Try Ollama or Google API first (faster, works on 8GB RAM)
+  const hasNativeImage = requestHasNativeImageInput(parts);
+  if (!hasNativeImage) {
+    try {
+      const providerResult = await callGemmaViaProvider(parts, { requestId, operation, maxNewTokens });
+      if (providerResult) {
+        writeLog("info", "gemma.provider.success", {
+          requestId,
+          summary: `${operation} succeeded via gemmaProvider.`,
+          operation,
+          provider: providerResult.meta?.provider || "unknown",
+        });
+        return providerResult;
+      }
+    } catch (providerErr) {
+      writeLog("info", "gemma.provider.failed", {
+        requestId,
+        message: `gemmaProvider failed for ${operation}: ${providerErr.message}. Trying HuggingFace runner.`,
+      });
+    }
+  }
 
   if (!hasLocalGemmaModel(config)) {
     writeLog("info", "gemma.local.unavailable", {

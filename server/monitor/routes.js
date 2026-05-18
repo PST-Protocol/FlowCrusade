@@ -1,7 +1,8 @@
 import { Router } from 'express';
 import { readPrivacyConfig, writePrivacyConfig, takePrivacySnapshot, isBlacklisted } from './privacy.js';
-import { classify } from './classifier.js';
+import { classifyAsync, classifySync } from './classifier.js';
 import { readClassificationConfig, writeClassificationConfig, resetClassificationConfig } from './classificationConfig.js';
+import { isOllamaAvailable, hasGoogleApiKey, getProviderInfo } from '../gemmaProvider.js';
 import { createSession, endSession, getActiveSession, updateSessionLastSeen, addMonitorEvent, getSessionEvents } from './store.js';
 import { writeDistractionIncrement, writeFocusIncrement } from './statsBridge.js';
 import { addClient, broadcast } from './stream.js';
@@ -107,9 +108,9 @@ router.post('/event', async (req, res) => {
     return res.json({ skipped: true });
   }
 
-  // Classify
+  // Classify — async path uses Gemma for ambiguous cases (FN-4)
   const taskContext = session.linkedTaskTitle || null;
-  const classResult = classify(eventPayload, taskContext);
+  const classResult = await classifyAsync(eventPayload, taskContext);
 
   // Store event
   const monitorEvent = addMonitorEvent({
@@ -123,6 +124,10 @@ router.post('/event', async (req, res) => {
     confidence: classResult.confidence,
     method: classResult.method,
     reason: classResult.reason,
+    toolCallsUsed: classResult.toolCallsUsed || [],
+    provider: classResult.provider || null,
+    model: classResult.model || null,
+    local: classResult.local !== false,
   });
 
   // Update session heartbeat
@@ -182,6 +187,19 @@ router.post('/classification/config', (req, res) => {
 
 router.post('/classification/config/reset', (req, res) => {
   res.json(resetClassificationConfig());
+});
+
+// Gemma provider health for PrivacySurface (INV-2 audit)
+router.get('/provider/health', async (req, res) => {
+  const [ollamaReady] = await Promise.all([isOllamaAvailable()]);
+  const info = getProviderInfo();
+  res.json({
+    ollamaReady,
+    googleApiKeySet: info.hasGoogleKey,
+    cloudCallCount: info.cloudCallCount,
+    local: ollamaReady,
+    provider: ollamaReady ? 'ollama' : info.hasGoogleKey ? 'google-ai-studio' : 'rules-only',
+  });
 });
 
 export default router;

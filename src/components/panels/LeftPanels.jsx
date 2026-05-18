@@ -57,7 +57,7 @@ export default function LeftPanels({ t, theme, activePanel, close, stats, tasks,
         <div className="p-6 flex-1 overflow-y-auto custom-scrollbar">
           {activePanel === 'calendar' && <CalendarPanel t={t} tasks={tasks} historyRecords={historyRecords} onSelectTask={onSelectTask} onCreateTask={onCreateTask} onUpdateTaskDate={onUpdateTaskDate} activeTaskId={activeTaskId} onDeleteTask={onDeleteTask} onToggleTask={onToggleTask} />}
           {activePanel === 'stats' && <StatsPanel t={t} theme={theme} stats={stats} />}
-          {activePanel === 'monitor' && <MonitorPanel t={t} theme={theme} enabled={settings.monitorEnabled} onToggle={(v) => setSettings({ ...settings, monitorEnabled: v })} showToast={showToast} />}
+          {activePanel === 'monitor' && <MonitorPanel t={t} theme={theme} enabled={settings.monitorEnabled} onToggle={(v) => setSettings({ ...settings, monitorEnabled: v })} showToast={showToast} activeTask={tasks.find((tk) => tk.id === activeTaskId) || null} />}
           {activePanel === 'settings' && <SettingsPanel t={t} settings={settings} setSettings={setSettings} showToast={showToast} />}
         </div>
       </div>

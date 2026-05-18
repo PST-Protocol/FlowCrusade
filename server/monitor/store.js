@@ -119,7 +119,7 @@ export function updateSessionLastSeen(sessionId) {
   writeData(data);
 }
 
-export function addMonitorEvent({ sessionId, appName, windowTitle, domain, durationSeconds, timestamp, classification, confidence, method, reason }) {
+export function addMonitorEvent({ sessionId, appName, windowTitle, domain, durationSeconds, timestamp, classification, confidence, method, reason, toolCallsUsed, provider, model, local }) {
   const data = readData();
   const event = {
     id: crypto.randomUUID(),
@@ -133,6 +133,10 @@ export function addMonitorEvent({ sessionId, appName, windowTitle, domain, durat
     confidence,
     method,
     reason,
+    toolCallsUsed: toolCallsUsed || [],
+    provider: provider || null,
+    model: model || null,
+    local: local !== false,
   };
   data.events.push(event);
   writeData(data);

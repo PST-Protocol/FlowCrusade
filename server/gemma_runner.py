@@ -150,11 +150,15 @@ def resolve_torch_dtype(torch_module, dtype: str):
 
 def normalize_device_map(device_map: str) -> str:
     normalized = (device_map or "auto").strip().lower()
-    if normalized in {"gpu", "cuda", "cuda:0"}:
+    if normalized in {"gpu", "cuda", "cuda:0", "mps"}:
         return "auto"
     if normalized in {"auto", "balanced", "balanced_low_0", "sequential", "cpu"}:
         return normalized
     return "auto"
+
+
+def is_mps_available(torch_module) -> bool:
+    return getattr(torch_module.backends, "mps", None) is not None and torch_module.backends.mps.is_available()
 
 
 def parse_memory_bytes(value: str | None) -> int | None:
@@ -336,9 +340,10 @@ def load_model(model_dir: Path, device_map: str, dtype: str, gpu_memory_fraction
         except Exception as exc:
             print(f"TorchAO int4 quantized load failed; falling back to stable load. {type(exc).__name__}: {exc}", file=sys.stderr)
 
+    use_mps = normalized_device_map != "cpu" and not torch.cuda.is_available() and is_mps_available(torch)
     try:
         load_kwargs = {
-            "device_map": None,
+            "device_map": "mps" if use_mps else None,
             "local_files_only": True,
             "trust_remote_code": True,
         }

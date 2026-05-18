@@ -11,7 +11,7 @@ import {
 
 import CollapsibleText from '../common/CollapsibleText';
 
-export default function ViewB({ t, theme, task, tasks, onBreakdown, onSwitchTask, isWorking }) {
+export default function ViewB({ t, theme, task, tasks, onBreakdown, onSwitchTask, isWorking, onOpenMonitor }) {
   if (!task) return null;
   const [showSwitch, setShowSwitch] = useState(false);
 
@@ -68,7 +68,7 @@ export default function ViewB({ t, theme, task, tasks, onBreakdown, onSwitchTask
             </div>
           </div>
 
-          <div className="flex items-center gap-4">
+          <div className="flex items-center gap-4 flex-wrap">
             <button
               onClick={onBreakdown}
               disabled={isWorking}
@@ -77,6 +77,15 @@ export default function ViewB({ t, theme, task, tasks, onBreakdown, onSwitchTask
               <Zap className="w-5 h-5 relative z-10 fill-white/20" />
               <span className="relative z-10">{isWorking ? 'Working...' : 'Breakdown Task'}</span>
             </button>
+            {onOpenMonitor && (
+              <button
+                onClick={onOpenMonitor}
+                className={`inline-flex items-center justify-center gap-2 px-6 py-4 font-bold rounded-xl transition-all active:scale-95 border ${t.bgCard} ${t.border} ${t.textMain} hover:border-indigo-500/50 hover:text-indigo-400`}
+              >
+                <Play className="w-4 h-4" />
+                <span>Start Focus Session</span>
+              </button>
+            )}
           </div>
         </div>
       </div>

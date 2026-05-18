@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { AlertTriangle, CheckCircle, ShieldAlert, Play, X, Wifi, WifiOff } from 'lucide-react';
+import { AlertTriangle, CheckCircle, ShieldAlert, Play, X, Wifi, WifiOff, Brain, Shield } from 'lucide-react';
 import {
   startMonitorSession,
   endMonitorSession,
@@ -53,13 +53,14 @@ function getActivityLabel(event, fallback) {
   return event?.appName || event?.windowTitle || fallback;
 }
 
-export default function MonitorPanel({ t, theme, enabled, onToggle, showToast }) {
+export default function MonitorPanel({ t, theme, enabled, onToggle, showToast, activeTask }) {
   const [session, setSession] = useState(null);
   const [events, setEvents] = useState([]);
   const [loading, setLoading] = useState(false);
   const [showPicker, setShowPicker] = useState(false);
   const [sseConnected, setSseConnected] = useState(false);
   const [agentStatus, setAgentStatus] = useState(null);
+  const [providerHealth, setProviderHealth] = useState(null);
   const sseRef = useRef(null);
   const onToggleRef = useRef(onToggle);
 
@@ -86,6 +87,15 @@ export default function MonitorPanel({ t, theme, enabled, onToggle, showToast })
 
     refreshAgentStatus();
     const statusTimer = setInterval(refreshAgentStatus, 5000);
+
+    // Fetch provider health for PrivacySurface
+    const fetchProviderHealth = () =>
+      fetch('http://localhost:8787/api/monitor/provider/health')
+        .then((r) => r.json())
+        .then(setProviderHealth)
+        .catch(() => {});
+    fetchProviderHealth();
+    const providerTimer = setInterval(fetchProviderHealth, 10_000);
 
     // Connect to SSE stream
     const sse = createMonitorSSE();
@@ -124,6 +134,7 @@ export default function MonitorPanel({ t, theme, enabled, onToggle, showToast })
 
     return () => {
       clearInterval(statusTimer);
+      clearInterval(providerTimer);
       sse.close();
     };
   }, []);
@@ -133,7 +144,11 @@ export default function MonitorPanel({ t, theme, enabled, onToggle, showToast })
     let startedSession = null;
     try {
       if (turnOn) {
-        const { session: newSession } = await startMonitorSession({ mode: 'standalone' });
+        const { session: newSession } = await startMonitorSession({
+          mode: activeTask ? 'task-linked' : 'standalone',
+          linkedTaskId: activeTask?.id || null,
+          linkedTaskTitle: activeTask?.title || null,
+        });
         startedSession = newSession;
         const { agent } = await startMonitorAgent();
         setSession(newSession);
@@ -215,6 +230,33 @@ export default function MonitorPanel({ t, theme, enabled, onToggle, showToast })
 
   return (
     <div className="space-y-5 animate-fade-in">
+
+      {/* PrivacySurface — INV-2 audit badge */}
+      {providerHealth && (
+        <div className={`p-3 rounded-xl border flex items-center gap-2 ${t.bgCard} ${t.border}`}>
+          <Shield className={`w-4 h-4 shrink-0 ${providerHealth.local ? 'text-emerald-500' : 'text-amber-400'}`} />
+          <div className="flex-1 min-w-0">
+            <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5">
+              <span className={`text-[10px] font-bold uppercase tracking-wider ${providerHealth.local ? 'text-emerald-500' : 'text-amber-400'}`}>
+                {providerHealth.local ? 'Local inference' : 'Cloud inference'}
+              </span>
+              <span className={`text-[10px] font-bold ${t.textMuted}`}>
+                Gemma 4 · {providerHealth.provider}
+              </span>
+            </div>
+            <div className="flex items-center gap-2 mt-0.5">
+              <span className={`text-[10px] ${providerHealth.cloudCallCount === 0 ? 'text-emerald-500' : 'text-amber-400'}`}>
+                cloud-calls: {providerHealth.cloudCallCount}
+              </span>
+              <span className={`text-[10px] ${t.textMuted}`}>·</span>
+              <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded-full ${providerHealth.local ? 'bg-emerald-500/10 text-emerald-500' : 'bg-amber-500/10 text-amber-400'}`}>
+                {providerHealth.local ? 'private' : 'dev-mode'}
+              </span>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Toggle */}
       <div className={`p-4 rounded-xl border flex items-center justify-between ${t.bgCard} ${t.border}`}>
         <div>
@@ -229,6 +271,11 @@ export default function MonitorPanel({ t, theme, enabled, onToggle, showToast })
           <p className={`text-[10px] mt-1 ${t.textMuted}`}>
             {monitorState} · {events.length} events
           </p>
+          {(session?.linkedTaskTitle || (!session && activeTask)) && (
+            <p className={`text-[10px] mt-0.5 text-indigo-400 truncate max-w-[180px]`}>
+              Task: {session?.linkedTaskTitle || activeTask?.title}
+            </p>
+          )}
           {enabled && (
             <div className="mt-2 flex flex-wrap items-center gap-2">
               <span className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-bold ${session ? 'bg-emerald-500/10 text-emerald-500' : 'bg-slate-500/10 text-slate-400'}`}>
@@ -398,11 +445,17 @@ export default function MonitorPanel({ t, theme, enabled, onToggle, showToast })
                       style={{ width: `${cardWidth}%` }}
                     >
                       <div className="flex items-center justify-between mb-1">
-                        <span className="font-bold text-xs text-emerald-500">Focus</span>
+                        <div className="flex items-center gap-1">
+                          <span className="font-bold text-xs text-emerald-500">Focus</span>
+                          {ev.method?.includes('gemma') && (
+                            <Brain className="w-3 h-3 text-indigo-400" title="Gemma classified" />
+                          )}
+                        </div>
                         <span className={`text-[10px] font-bold ${t.textMuted}`}>{timeLabel}</span>
                       </div>
                       <p className={`text-xs ${t.textMain}`}>{activityLabel}</p>
-                      {ev.domain && <p className={`text-[10px] mt-0.5 truncate ${t.textMuted}`}>{ev.domain}</p>}
+                      {ev.reason && <p className={`text-[10px] mt-1 italic ${t.textMuted}`}>{ev.reason}</p>}
+                      {ev.domain && !ev.reason && <p className={`text-[10px] mt-0.5 truncate ${t.textMuted}`}>{ev.domain}</p>}
                     </div>
                   ) : (
                     <div
@@ -414,13 +467,19 @@ export default function MonitorPanel({ t, theme, enabled, onToggle, showToast })
                       }}
                     >
                       <div className="flex items-center justify-between mb-1">
-                        <span className="font-bold text-xs text-rose-400">
-                          Alert · {durationMins}m
-                        </span>
+                        <div className="flex items-center gap-1">
+                          <span className="font-bold text-xs text-rose-400">
+                            {ev.classification === 'sensitive-hidden' ? 'Private' : `Alert · ${durationMins}m`}
+                          </span>
+                          {ev.method?.includes('gemma') && (
+                            <Brain className="w-3 h-3 text-indigo-400" title="Gemma classified" />
+                          )}
+                        </div>
                         <span className={`text-[10px] font-bold ${t.textMuted}`}>{timeLabel}</span>
                       </div>
                       <p className={`text-xs ${t.textMain}`}>{activityLabel}</p>
-                      {ev.domain && <p className={`text-[10px] mt-0.5 truncate ${t.textMuted}`}>{ev.domain}</p>}
+                      {ev.reason && <p className={`text-[10px] mt-1 italic ${t.textMuted}`}>{ev.reason}</p>}
+                      {ev.domain && !ev.reason && <p className={`text-[10px] mt-0.5 truncate ${t.textMuted}`}>{ev.domain}</p>}
                     </div>
                   )}
                   <button

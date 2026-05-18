@@ -135,7 +135,10 @@ export default function FlowCrusadeApp() {
   // Helpers
   const showToast = (msg, type = 'success') => {
     setToast({ msg, type, id: Date.now() });
-    setTimeout(() => setToast(null), 3000);
+    if (type !== 'loading') {
+      setTimeout(() => setToast(null), type === 'warning' ? 5000 : 3000);
+    }
+    // 'loading' toasts persist until the next showToast call clears them
   };
   const openRewards = () => setIsRewardsOpen(true);
   const closeRewards = () => setIsRewardsOpen(false);
@@ -395,7 +398,7 @@ export default function FlowCrusadeApp() {
 
     try {
       setIsAiWorking(true);
-      showToast('Generating 3 subtasks locally...');
+      showToast('Asking Gemma 4… this may take ~30s', 'loading');
 
       const filePayload = composerFile
         ? {
@@ -467,7 +470,7 @@ export default function FlowCrusadeApp() {
 
     try {
       setIsAiWorking(true);
-      showToast('Generating 3 child subtasks locally...');
+      showToast('Asking Gemma 4… this may take ~30s', 'loading');
 
       const ensured = await ensureRootContext(ctx.root);
       const contextId = ensured.sourceContext.contextId;
@@ -556,7 +559,7 @@ export default function FlowCrusadeApp() {
 
     try {
       setIsAiWorking(true);
-      showToast('Regenerating only this subtask...');
+      showToast('Asking Gemma 4… regenerating subtask', 'loading');
 
       const ensured = await ensureRootContext(ctx.root);
       const result = await postBreakdownRequest({
@@ -802,6 +805,7 @@ export default function FlowCrusadeApp() {
               tasks={tasks}
               onSwitchTask={(id) => { setActiveTaskId(id); setPath([]); }}
               isWorking={isAiWorking}
+              onOpenMonitor={() => setActivePanel('monitor')}
             />
           )}
 
@@ -909,7 +913,13 @@ export default function FlowCrusadeApp() {
       {toast && (
         <div className="fixed bottom-6 right-6 md:left-1/2 md:-translate-x-1/2 md:right-auto z-50 animate-fade-in">
           <div className={`px-4 py-3 rounded-xl shadow-2xl flex items-center gap-3 text-sm font-medium border ${theme === 'dark' ? 'bg-[#2a2e38] border-white/10 text-white' : 'bg-gray-900 border-gray-800 text-white'}`}>
-            {toast.type === 'success' ? <CheckCircle className="w-4 h-4 text-emerald-400" /> : <ShieldAlert className="w-4 h-4 text-amber-400" />}
+            {toast.type === 'loading' ? (
+              <span className="w-4 h-4 rounded-full border-2 border-indigo-400 border-t-transparent animate-spin shrink-0" />
+            ) : toast.type === 'success' ? (
+              <CheckCircle className="w-4 h-4 text-emerald-400 shrink-0" />
+            ) : (
+              <ShieldAlert className="w-4 h-4 text-amber-400 shrink-0" />
+            )}
             {toast.msg}
           </div>
         </div>
