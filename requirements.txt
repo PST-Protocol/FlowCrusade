@@ -1,0 +1,9 @@
+accelerate
+huggingface_hub
+hf-xet
+mistral-common
+Pillow
+pillow-heif
+torch
+torchvision
+transformers

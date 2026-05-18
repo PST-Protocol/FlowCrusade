@@ -71,7 +71,7 @@ Break any task into steps → monitor your real-time activity → see exactly wh
 - Node.js 18+
 - macOS (for the activity monitor; the rest works on any OS)
 - Python 3.10+ for local Gemma inference
-- Python packages: `pip install -U torch torchvision accelerate pillow mistral-common` plus source Transformers for Gemma 4 support
+- `pip` and `venv` support for setting up an isolated Python environment
 - A local `google/gemma-4-E2B-it` model checkout in `models/gemma-4-E2B-it`
 - Optional: a Hugging Face token with access to the Gemma weights, used only for `npm run download:gemma`
 
@@ -83,7 +83,33 @@ cd FlowCrusade
 npm install
 ```
 
-### 2. Configure environment
+### 2. Setup Python environment
+
+This project uses Python for Gemma model download and local inference checks. After cloning the repo, create an isolated Python environment and install the required packages:
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install --upgrade pip
+pip install -r requirements.txt
+```
+
+If you prefer conda instead of `venv`:
+
+```bash
+conda create -n flowcrusade python=3.13
+conda activate flowcrusade
+python -m pip install --upgrade pip
+pip install -r requirements.txt
+```
+
+If `python` is not available on your PATH, use the interpreter from the active environment explicitly:
+
+```bash
+python3 -m pip install -r requirements.txt
+```
+
+### 3. Configure environment
 
 ```bash
 cp .env.example .env

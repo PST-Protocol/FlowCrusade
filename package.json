@@ -10,7 +10,7 @@
     "preview": "vite preview",
     "server": "node server/index.js",
     "monitor-agent": "node scripts/desktop-monitor.js",
-    "download:gemma": "python scripts/download-gemma.py",
+    "download:gemma": "python3 scripts/download-gemma.py",
     "test:image-pipeline": "node scripts/run-gemma-python.js tests/check_multimodal_image_pipeline.py"
   },
   "dependencies": {
