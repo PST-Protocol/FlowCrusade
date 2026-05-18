@@ -30,13 +30,14 @@ FlowCrusade is organized by responsibility. Frontend UI lives in `src/`, local A
 | Quick notes sidebar/drawer | `src/components/panels/QuickNotesPanel.jsx` |
 | Left overlay panel switcher | `src/components/panels/LeftPanels.jsx` |
 | Shared input, nav, progress, text, and modal UI | `src/components/common/` |
-| Express server, local Gemma breakdown endpoint, stats endpoints, file preprocessing | `server/index.js` |
+| Express server, Gemma breakdown endpoint, stats endpoints, file preprocessing | `server/index.js` |
+| Gemma inference provider routing (Ollama → Google API → Transformers) | `server/gemmaProvider.js` |
 | Stats persistence and computed daily metrics | `server/statsStore.js` |
 | Monitor REST routes | `server/monitor/routes.js` |
 | Monitor desktop agent process management | `server/monitor/agent.js` |
 | Monitor session/event persistence and crash recovery | `server/monitor/store.js` |
 | Monitor SSE broadcasting | `server/monitor/stream.js` |
-| Activity focus/distraction classification rules | `server/monitor/classifier.js` |
+| Context-sensitive Gemma + rule-based focus/distraction classifier | `server/monitor/classifier.js` |
 | Editable classification config defaults/storage | `server/monitor/classificationConfig.js` |
 | Monitor privacy filters | `server/monitor/privacy.js` |
 | Bridge from monitor events into stats | `server/monitor/statsBridge.js` |
@@ -58,17 +59,18 @@ FlowCrusade is organized by responsibility. Frontend UI lives in `src/`, local A
 ├── scripts/
 │   └── desktop-monitor.js       # macOS active-window monitor agent
 ├── server/
-│   ├── index.js                 # Express app: local Gemma breakdown, stats API, file handling
-│   ├── gemma_runner.py          # Local Transformers runner for Gemma
+│   ├── index.js                 # Express app: Gemma breakdown, stats API, file handling
+│   ├── gemmaProvider.js         # Gemma inference router: Ollama → Google API → Transformers
+│   ├── gemma_runner.py          # Local Transformers runner for Gemma (high-RAM path)
 │   ├── statsStore.js            # Stats JSON store and metric calculation
 │   ├── data/                    # Runtime JSON stores, auto-created and git-ignored
 │   ├── logs/                    # Runtime request/error logs, auto-created and git-ignored
 │   └── monitor/
-│       ├── routes.js            # /api/monitor endpoints
+│       ├── routes.js            # /api/monitor endpoints (includes /provider/health)
 │       ├── agent.js             # Starts/stops/status-checks desktop-monitor.js
 │       ├── store.js             # Monitor sessions/events persistence
 │       ├── stream.js            # SSE clients and broadcasts
-│       ├── classifier.js        # Focus/distraction classifier
+│       ├── classifier.js        # Gemma + rule-based context-sensitive classifier
 │       ├── classificationConfig.js # Editable classifier rule storage
 │       ├── privacy.js           # Privacy config and blacklist checks
 │       └── statsBridge.js       # Writes monitor increments to stats
@@ -108,13 +110,14 @@ Panel navigation is wired in `App.jsx`, while `LeftPanels.jsx` chooses the curre
 
 The local server starts from `server/index.js`.
 
-- Local Gemma breakdown requests are handled by `POST /api/breakdown`.
-- Provider health is exposed at `GET /api/provider/health`; cloud fallback is disabled and the cloud-call counter stays at 0.
+- Gemma breakdown requests are handled by `POST /api/breakdown`. The server tries inference in order: Ollama → Google AI Studio API → local Transformers subprocess → deterministic rules fallback.
+- `server/gemmaProvider.js` owns this routing for both breakdown (`inferText`) and Focus Sentinel classification (`classifyActivityWithGemma`). It tracks `cloudCallCount` for the PrivacySurface audit.
+- Provider health is exposed at `GET /api/provider/health` and `GET /api/monitor/provider/health`.
 - Focus and completion stats use `/api/stats` endpoints and `server/statsStore.js`.
 - Monitor endpoints are mounted from `server/monitor/routes.js`.
 - Monitor agent lifecycle is managed by `server/monitor/agent.js`.
 - Server-sent events are published through `server/monitor/stream.js`.
-- Monitor events are classified with configurable rules, persisted, broadcast to the UI, and then bridged into stats.
+- Monitor events are classified by `server/monitor/classifier.js` using a privacy filter → fast rule path → Gemma semantic classification (FN-4) for ambiguous cases → keyword fallback. Results are persisted, broadcast to the UI, and bridged into stats.
 
 Runtime data is stored under `server/data/`; runtime logs are stored under `server/logs/`. Both directories are generated locally and should not be treated as source files.
 
@@ -125,7 +128,9 @@ The Monitor MVP has two separate runtime concepts:
 - Session: backend state that says tracking is active.
 - Agent: the local macOS process that reads active-window data.
 
-The UI starts both through the Monitor panel. The backend starts `scripts/desktop-monitor.js`, receives events at `POST /api/monitor/event`, classifies them with `server/monitor/classifier.js`, stores them in `server/data/monitor.json`, writes focus/distraction increments to stats, and broadcasts updates over SSE.
+The UI starts both through the Monitor panel. The backend starts `scripts/desktop-monitor.js`, receives events at `POST /api/monitor/event`, classifies them with `server/monitor/classifier.js` (Gemma FN-4 for ambiguous cases), stores them in `server/data/monitor.json`, writes focus/distraction increments to stats, and broadcasts updates over SSE.
+
+Classification is context-sensitive: the session's `linkedTaskTitle` is passed to Gemma so the same window title can be classified differently depending on what the user is working on. Sessions can be started in `standalone` or `task-linked` mode; the "Start Focus Session" button in the task overview view starts a task-linked session automatically.
 
 The Settings panel edits focus/distraction app and domain rules through `src/services/monitorApi.js`; the server stores those rules in `server/data/classification.json`.
 

@@ -2,9 +2,9 @@
 
 # FlowCrusade
 
-**Local-first Gemma learning coach for deep work.**
+**Local-first Gemma 4 learning coach for deep work.**
 
-Break any task into steps → monitor your real-time activity → see exactly where your time goes.
+Break any task into steps → monitor your real-time activity with context-sensitive Gemma classification → see exactly where your time goes.
 
 ![React](https://img.shields.io/badge/React-19.2-61DAFB?logo=react&logoColor=white&style=flat-square)
 ![Vite](https://img.shields.io/badge/Vite-7.3-646CFF?logo=vite&logoColor=white&style=flat-square)
@@ -21,11 +21,11 @@ Break any task into steps → monitor your real-time activity → see exactly wh
 
 | Feature | Description |
 |---|---|
-| **Local Gemma Task Breakdown** | Type a goal or upload Word/PDF, screenshots, or handwritten photos; local Gemma 4 E2B breaks it into 3 subtasks, each drill-downable into 3 more |
-| **Real-time Activity Monitor** | macOS agent reads the active window every 15s and classifies it as focus or distraction |
+| **Local Gemma Task Breakdown** | Type a goal or upload Word/PDF, screenshots, or handwritten photos; Gemma 4 breaks it into subtasks, each drill-downable into 3 more |
+| **Context-sensitive Focus Sentinel** | macOS agent reads the active window every 15s; Gemma 4 classifies it as focus or distraction relative to your active task — the same YouTube video can be focus or distraction depending on what you're working on |
+| **PrivacySurface Badge** | Live display of inference provider, cloud-call counter, and local/private status. Sensitive apps (Messages, 1Password, banking) are privacy-filtered before any model call |
 | **Live Stats** | Focus minutes, distraction time, streaks, and peak hours — updated instantly via SSE |
 | **Classification Rules** | Edit which apps and domains count as focus or distraction from the Settings panel |
-| **Privacy Filter** | Sensitive apps (Messages, 1Password, etc.) are never reported to the backend |
 | **Quick Notes** | Persistent scratchpad beside the task canvas |
 | **Calendar View** | Schedule tasks and browse history by date |
 
@@ -70,10 +70,9 @@ Break any task into steps → monitor your real-time activity → see exactly wh
 
 - Node.js 18+
 - macOS (for the activity monitor; the rest works on any OS)
-- Python 3.10+ for local Gemma inference
-- `pip` and `venv` support for setting up an isolated Python environment
-- A local `google/gemma-4-E2B-it` model checkout in `models/gemma-4-E2B-it`
-- Optional: a Hugging Face token with access to the Gemma weights, used only for `npm run download:gemma`
+- **Recommended — Ollama** (local, runs on 8GB RAM): install from [ollama.com](https://ollama.com), then `ollama pull gemma4:e2b`
+- **Alternative — Google AI Studio API key** (cloud dev fallback): set `GOOGLE_API_KEY` in `.env`
+- Optional: Python 3.10+ and a local `google/gemma-4-E2B-it` model for direct Transformers inference (requires ~10GB RAM)
 
 ### 1. Clone and install
 
@@ -83,30 +82,28 @@ cd FlowCrusade
 npm install
 ```
 
-### 2. Setup Python environment
+### 2. Set up Gemma inference
 
-This project uses Python for Gemma model download and local inference checks. After cloning the repo, create an isolated Python environment and install the required packages:
+**Option A — Ollama (recommended, works on 8 GB RAM):**
+
+```bash
+# Install Ollama from https://ollama.com, then:
+ollama pull gemma4:e2b
+```
+
+The server detects Ollama automatically on startup and uses it for both task breakdown and Focus Sentinel classification.
+
+**Option B — Google AI Studio API (cloud dev fallback):**
+
+Get a free API key from [aistudio.google.com](https://aistudio.google.com) and set it in `.env` (see step 3). The app will use this when Ollama is unavailable.
+
+**Option C — Local Transformers (requires ~10 GB RAM):**
 
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
-python -m pip install --upgrade pip
 pip install -r requirements.txt
-```
-
-If you prefer conda instead of `venv`:
-
-```bash
-conda create -n flowcrusade python=3.13
-conda activate flowcrusade
-python -m pip install --upgrade pip
-pip install -r requirements.txt
-```
-
-If `python` is not available on your PATH, use the interpreter from the active environment explicitly:
-
-```bash
-python3 -m pip install -r requirements.txt
+npm run download:gemma   # requires HF_TOKEN in .env
 ```
 
 ### 3. Configure environment
@@ -115,32 +112,29 @@ python3 -m pip install -r requirements.txt
 cp .env.example .env
 ```
 
-Open `.env` and point it at the local model:
+Open `.env` and configure your inference path:
 
 ```env
 PORT=8787
+
+# Option A: Ollama (local, recommended)
+GEMMA_OLLAMA_URL=http://localhost:11434
+GEMMA_OLLAMA_MODEL=gemma4:e2b
+
+# Option B: Google AI Studio API (cloud dev fallback)
+# GOOGLE_API_KEY=your_key_here
+# GOOGLE_GEMMA_MODEL=gemma-4-26b-a4b-it
+
+# Option C: Local Transformers (high RAM required)
 GEMMA_MODEL_ID=google/gemma-4-E2B-it
 GEMMA_MODEL_DIR=./models/gemma-4-E2B-it
-GEMMA_DEVICE_MAP=auto
-GEMMA_GPU_MEMORY_FRACTION=0.58
-GEMMA_PERSISTENT_WORKER=true
 ```
 
-The server never calls Gemini or any cloud fallback. If the local model is not present, task breakdown falls back to deterministic local rules. The default local runner keeps one Gemma worker warm, caps GPU placement so 12GB cards have room for generation, and offloads the rest to CPU for lower-end machines.
+Inference priority at runtime: **Ollama → Google AI Studio API → local Transformers → deterministic rules fallback**.
+
+The `PrivacySurface` badge in the Monitor panel shows the active provider, whether inference is local, and a live cloud-call counter. In a local-only setup (Ollama), the counter stays at 0.
 
 Upload intake supports text, Word/Office documents, PDFs, and native image inputs for screenshots or handwritten photos (`PNG`, `JPG/JPEG`, `WebP`, `BMP`, `GIF`, `TIFF`). Image uploads are decoded locally and passed to Gemma as pixels rather than through an OCR-only preprocessing step.
-
-To download the model into the repo-local directory after setting `HF_TOKEN`:
-
-```bash
-npm run download:gemma
-```
-
-To verify the no-model image intake wiring:
-
-```bash
-npm run test:image-pipeline
-```
 
 ### 3. Start the backend
 
@@ -185,7 +179,7 @@ The agent uses native `osascript` — no extra npm packages. It detects the acti
 
 **Known monitor limits:**
 - Firefox domain detection is not supported (no AppleScript access)
-- Classification is rule-based — unusual app names may not be recognized
+- Gemma semantic classification requires Ollama or a Google API key; without either, classification falls back to rule-based logic
 - Single-user, single-machine, local use only
 - The 10-second reporting threshold is low by design for testing; consider 60s+ for production
 
@@ -221,6 +215,7 @@ The backend runs on `http://localhost:8787`.
 |---|---|---|
 | `POST` | `/api/breakdown` | Local Gemma task breakdown with deterministic fallback |
 | `GET` | `/api/provider/health` | Local Gemma provider status and cloud-call counter |
+| `GET` | `/api/monitor/provider/health` | Monitor inference provider status (Ollama/API/local) |
 | `GET` | `/api/stats` | Daily focus stats |
 | `POST` | `/api/stats/focus-session` | Record a focus session |
 | `POST` | `/api/stats/completed-task` | Record a completed task |
@@ -282,7 +277,7 @@ FlowCrusade/
 
 - **Frontend** — React 19, Vite 7, Tailwind CSS, Lucide icons
 - **Backend** — Node.js, Express, Server-Sent Events
-- **AI** - Local Gemma 4 E2B via Transformers, with deterministic local fallback
+- **AI** — Gemma 4 via Ollama (local, recommended) · Google AI Studio API (cloud dev fallback) · Transformers (direct, high-RAM) · deterministic rules (no-model fallback)
 - **Monitor** — macOS `osascript` / `ioreg` (no native addons)
 - **Storage** — localStorage (tasks/notes), JSON files (stats/sessions)
 
@@ -301,4 +296,4 @@ Pull requests are welcome. For significant changes, please open an issue first t
 
 ## License
 
-MIT © PST Protocol
+Apache-2.0 © PST Protocol
