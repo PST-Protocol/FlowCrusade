@@ -9,7 +9,7 @@ Break any task into steps → monitor your real-time activity with context-sensi
 ![React](https://img.shields.io/badge/React-19.2-61DAFB?logo=react&logoColor=white&style=flat-square)
 ![Vite](https://img.shields.io/badge/Vite-7.3-646CFF?logo=vite&logoColor=white&style=flat-square)
 ![Node.js](https://img.shields.io/badge/Node.js-Express-339933?logo=node.js&logoColor=white&style=flat-square)
-![macOS](https://img.shields.io/badge/Monitor-macOS-000000?logo=apple&logoColor=white&style=flat-square)
+![Desktop Monitor](https://img.shields.io/badge/Monitor-macOS%20%7C%20Windows-0F172A?style=flat-square)
 ![Gemma](https://img.shields.io/badge/AI-Gemma_4_E2B-4285F4?logo=google&logoColor=white&style=flat-square)
 ![Local](https://img.shields.io/badge/Inference-Local_First-16A34A?style=flat-square)
 
@@ -22,7 +22,7 @@ Break any task into steps → monitor your real-time activity with context-sensi
 | Feature | Description |
 |---|---|
 | **Local Gemma Task Breakdown** | Type a goal or upload Word/PDF, screenshots, or handwritten photos; Gemma 4 breaks it into subtasks, each drill-downable into 3 more |
-| **Context-sensitive Focus Sentinel** | macOS agent reads the active window every 15s; Gemma 4 classifies it as focus or distraction relative to your active task — the same YouTube video can be focus or distraction depending on what you're working on |
+| **Context-sensitive Focus Sentinel** | macOS/Windows agent reads the active window every 15s; Gemma 4 classifies it as focus or distraction relative to your active task — the same YouTube video can be focus or distraction depending on what you're working on |
 | **PrivacySurface Badge** | Live display of inference provider, cloud-call counter, and local/private status. Sensitive apps (Messages, 1Password, banking) are privacy-filtered before any model call |
 | **Live Stats** | Focus minutes, distraction time, streaks, and peak hours — updated instantly via SSE |
 | **Classification Rules** | Edit which apps and domains count as focus or distraction from the Settings panel |
@@ -69,7 +69,7 @@ Break any task into steps → monitor your real-time activity with context-sensi
 ### Prerequisites
 
 - Node.js 18+
-- macOS (for the activity monitor; the rest works on any OS)
+- macOS or Windows (for the activity monitor; the rest works on any OS)
 - **Recommended — Ollama** (local, runs on 8GB RAM): install from [ollama.com](https://ollama.com), then `ollama pull gemma4:e2b`
 - **Alternative — Google AI Studio API key** (cloud dev fallback): set `GOOGLE_API_KEY` in `.env`
 - Optional: Python 3.10+ and a local `google/gemma-4-E2B-it` model for direct Transformers inference (requires ~10GB RAM)
@@ -156,7 +156,7 @@ Go to `http://localhost:5173`, open the **Monitor** panel, and toggle **Active M
 
 ---
 
-## Activity monitor (macOS)
+## Activity monitor (macOS and Windows)
 
 Toggling **Active Monitor** on in the sidebar:
 
@@ -164,7 +164,7 @@ Toggling **Active Monitor** on in the sidebar:
 2. Automatically launches `scripts/desktop-monitor.js`
 3. Streams classified events to the timeline in real time
 
-The agent uses native `osascript` — no extra npm packages. It detects the active app, window title, and browser domain (Chrome and Safari). A window is only reported after 10 seconds of continuous stay; idle time is capped at 5 minutes so stepping away doesn't inflate focus scores.
+The agent uses native OS tooling with no extra npm packages: `osascript`/`ioreg` on macOS, and PowerShell + Win32 APIs on Windows. It detects the active app, window title, and browser domain where available. A window is only reported after 10 seconds of continuous stay; idle time is capped at 5 minutes so stepping away doesn't inflate focus scores.
 
 **Status indicators:**
 
@@ -172,13 +172,13 @@ The agent uses native `osascript` — no extra npm packages. It detects the acti
 |---|---|
 | `Tracking` | Session active, desktop agent running |
 | `Session active · agent offline` | Session exists, agent not detected |
-| `Needs permission` | macOS blocked Accessibility access |
+| `Needs attention` | Desktop access, PowerShell, or platform support needs attention |
 | `Off` | No active session |
 
-> If macOS asks for Accessibility permission, grant it to the app that launched the backend — Terminal, VS Code, Cursor, etc.
+> On macOS, grant Accessibility permission to the app that launched the backend — Terminal, VS Code, Cursor, etc. On Windows, make sure the backend is running in your interactive desktop session with Windows PowerShell available.
 
 **Known monitor limits:**
-- Firefox domain detection is not supported (no AppleScript access)
+- Browser domain detection is exact for macOS Chrome/Safari; Windows infers domains from visible URLs or common browser title hints, so it can be less precise
 - Gemma semantic classification requires Ollama or a Google API key; without either, classification falls back to rule-based logic
 - Single-user, single-machine, local use only
 - The 10-second reporting threshold is low by design for testing; consider 60s+ for production
@@ -244,7 +244,7 @@ The backend runs on `http://localhost:8787`.
 ```
 FlowCrusade/
 ├── scripts/
-│   └── desktop-monitor.js          # macOS window monitor agent
+│   └── desktop-monitor.js          # macOS/Windows window monitor agent
 ├── server/
 │   ├── index.js                    # Express entry point
 │   ├── statsStore.js               # Stats helpers and computeStats()
@@ -278,7 +278,7 @@ FlowCrusade/
 - **Frontend** — React 19, Vite 7, Tailwind CSS, Lucide icons
 - **Backend** — Node.js, Express, Server-Sent Events
 - **AI** — Gemma 4 via Ollama (local, recommended) · Google AI Studio API (cloud dev fallback) · Transformers (direct, high-RAM) · deterministic rules (no-model fallback)
-- **Monitor** — macOS `osascript` / `ioreg` (no native addons)
+- **Monitor** — macOS `osascript` / `ioreg`, Windows PowerShell / Win32 APIs (no native addons)
 - **Storage** — localStorage (tasks/notes), JSON files (stats/sessions)
 
 ---

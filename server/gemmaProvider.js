@@ -15,6 +15,18 @@ export let cloudCallCount = 0;
 let _ollamaAvailable = null;
 let _ollamaCheckedAt = 0;
 const OLLAMA_CACHE_MS = 30_000;
+const CODE_PATHS = {
+  route: 'server/gemmaProvider.js:inferText',
+  ollamaText: 'server/gemmaProvider.js:inferViaOllama',
+  ollamaClassify: 'server/gemmaProvider.js:classifyViaOllama',
+  googleText: 'server/gemmaProvider.js:inferViaGoogleAPI',
+  googleClassify: 'server/gemmaProvider.js:classifyViaGoogleAPI',
+};
+
+function writeProviderLog(logger, level, event, payload = {}) {
+  if (typeof logger !== 'function') return;
+  logger(level, event, payload);
+}
 
 export async function isOllamaAvailable() {
   const now = Date.now();
@@ -65,6 +77,8 @@ export function getProviderInfo() {
     cloudCallCount,
     hasGoogleKey: hasGoogleApiKey(),
     ollamaUrl: process.env.GEMMA_OLLAMA_URL || 'http://localhost:11434',
+    ollamaModel: (process.env.GEMMA_OLLAMA_MODEL || '').trim() || 'auto-detect',
+    runtimePriority: ['gemma-ollama', 'google-ai-studio', 'local-transformers', 'local-rules'],
   };
 }
 
@@ -101,24 +115,103 @@ export async function classifyActivityWithGemma(event, activeTaskSummary) {
 /**
  * Run a text-only prompt through Gemma. Returns { text, meta } or null.
  */
-export async function inferText(prompt, { maxTokens = 512, requestId = '', operation = '' } = {}) {
-  if (await isOllamaAvailable()) {
+export async function inferText(prompt, { maxTokens = 512, requestId = '', operation = '', logger = null } = {}) {
+  const routeStartedAt = Date.now();
+  const baseLog = {
+    requestId,
+    operation,
+    maxTokens,
+    promptChars: typeof prompt === 'string' ? prompt.length : 0,
+    codePath: CODE_PATHS.route,
+  };
+
+  writeProviderLog(logger, 'info', 'gemma.provider.route.start', {
+    ...baseLog,
+    summary: `${operation || 'text-inference'} provider route started.`,
+    candidateOrder: ['gemma-ollama', 'google-ai-studio'],
+  });
+
+  const ollamaReady = await isOllamaAvailable();
+  if (ollamaReady) {
     try {
-      const result = await inferViaOllama(prompt, maxTokens, requestId, operation);
-      if (result?.text?.trim()) return result;
-      console.warn('[gemma.ollama.infer.empty] Ollama returned empty text, trying Google API');
+      const result = await inferViaOllama(prompt, maxTokens, requestId, operation, logger);
+      if (result?.text?.trim()) {
+        writeProviderLog(logger, 'info', 'gemma.provider.route.success', {
+          ...baseLog,
+          summary: `${operation || 'text-inference'} completed via Ollama.`,
+          provider: result.meta?.provider || 'gemma-ollama',
+          model: result.meta?.model || null,
+          source: result.meta?.source || 'local-ollama-http',
+          latencyMs: Date.now() - routeStartedAt,
+        });
+        return result;
+      }
+      writeProviderLog(logger, 'info', 'gemma.provider.ollama.empty', {
+        ...baseLog,
+        summary: 'Ollama returned empty text; trying Google AI Studio if configured.',
+        provider: 'gemma-ollama',
+        source: 'local-ollama-http',
+        ollamaUrl: process.env.GEMMA_OLLAMA_URL || 'http://localhost:11434',
+      });
+      console.warn('[gemma.ollama.infer.empty]', requestId, 'Ollama returned empty text, trying Google API');
     } catch (err) {
-      console.error('[gemma.ollama.infer.failed]', err.message);
+      writeProviderLog(logger, 'error', 'gemma.provider.ollama.failed', {
+        ...baseLog,
+        message: 'Ollama text inference failed; trying Google AI Studio if configured.',
+        provider: 'gemma-ollama',
+        source: 'local-ollama-http',
+        error: err.message,
+      });
+      console.error('[gemma.ollama.infer.failed]', requestId, err.message);
     }
+  } else {
+    writeProviderLog(logger, 'info', 'gemma.provider.ollama.skipped', {
+      ...baseLog,
+      summary: 'Ollama is not available for this request.',
+      provider: 'gemma-ollama',
+      source: 'local-ollama-http',
+      ollamaUrl: process.env.GEMMA_OLLAMA_URL || 'http://localhost:11434',
+    });
   }
 
   if (hasGoogleApiKey()) {
     try {
-      return await inferViaGoogleAPI(prompt, maxTokens, requestId, operation);
+      const result = await inferViaGoogleAPI(prompt, maxTokens, requestId, operation, logger);
+      writeProviderLog(logger, 'info', 'gemma.provider.route.success', {
+        ...baseLog,
+        summary: `${operation || 'text-inference'} completed via Google AI Studio.`,
+        provider: result.meta?.provider || 'google-ai-studio',
+        model: result.meta?.model || null,
+        source: result.meta?.source || 'google-ai-studio-api',
+        latencyMs: Date.now() - routeStartedAt,
+      });
+      return result;
     } catch (err) {
-      console.error('[gemma.google.infer.failed]', err.message);
+      writeProviderLog(logger, 'error', 'gemma.provider.google.failed', {
+        ...baseLog,
+        message: 'Google AI Studio text inference failed.',
+        provider: 'google-ai-studio',
+        source: 'google-ai-studio-api',
+        error: err.message,
+      });
+      console.error('[gemma.google.infer.failed]', requestId, err.message);
     }
+  } else {
+    writeProviderLog(logger, 'info', 'gemma.provider.google.skipped', {
+      ...baseLog,
+      summary: 'Google AI Studio is not configured for this request.',
+      provider: 'google-ai-studio',
+      source: 'google-ai-studio-api',
+      hasGoogleKey: false,
+    });
   }
+
+  writeProviderLog(logger, 'info', 'gemma.provider.route.none', {
+    ...baseLog,
+    summary: `${operation || 'text-inference'} did not complete via provider route; caller may try local Transformers or rules fallback.`,
+    candidateOrder: ['gemma-ollama', 'google-ai-studio'],
+    latencyMs: Date.now() - routeStartedAt,
+  });
 
   return null;
 }
@@ -165,6 +258,7 @@ async function classifyViaOllama(prompt, event, taskSummary) {
       ],
       tools: [CLASSIFY_TOOL_OLLAMA],
       stream: false,
+      think: false,
       options: { temperature: 0, num_predict: 512 },
     });
 
@@ -205,6 +299,7 @@ async function classifyViaOllama(prompt, event, taskSummary) {
     prompt: jsonPrompt,
     stream: false,
     format: 'json',
+    think: false,
     options: { temperature: 0, num_predict: 256 },
   });
 
@@ -214,14 +309,29 @@ async function classifyViaOllama(prompt, event, taskSummary) {
   return parseClassifyJson(genText, 'gemma-ollama', model);
 }
 
-async function inferViaOllama(prompt, maxTokens, requestId, operation) {
+async function inferViaOllama(prompt, maxTokens, requestId, operation, logger = null) {
   const ollamaBase = process.env.GEMMA_OLLAMA_URL || 'http://localhost:11434';
   const model = await getOllamaModelName();
+  const startedAt = Date.now();
+
+  writeProviderLog(logger, 'info', 'gemma.provider.ollama.start', {
+    requestId,
+    operation,
+    summary: `${operation || 'text-inference'} attempting Ollama text inference.`,
+    provider: 'gemma-ollama',
+    source: 'local-ollama-http',
+    codePath: CODE_PATHS.ollamaText,
+    endpoint: `${ollamaBase}/api/generate`,
+    model,
+    maxTokens,
+    think: false,
+  });
 
   const body = JSON.stringify({
     model,
     prompt,
     stream: false,
+    think: false,
     options: { temperature: 0, num_predict: maxTokens },
   });
 
@@ -229,12 +339,31 @@ async function inferViaOllama(prompt, maxTokens, requestId, operation) {
   const parsed = JSON.parse(raw);
   const text = parsed?.response || '';
 
+  writeProviderLog(logger, 'info', 'gemma.provider.ollama.response', {
+    requestId,
+    operation,
+    summary: `${operation || 'text-inference'} received Ollama response.`,
+    provider: 'gemma-ollama',
+    source: 'local-ollama-http',
+    codePath: CODE_PATHS.ollamaText,
+    endpoint: `${ollamaBase}/api/generate`,
+    model,
+    responseChars: text.length,
+    doneReason: parsed?.done_reason || null,
+    promptEvalCount: parsed?.prompt_eval_count ?? null,
+    evalCount: parsed?.eval_count ?? null,
+    latencyMs: Date.now() - startedAt,
+  });
+
   return {
     text,
     meta: {
       provider: 'gemma-ollama',
       model,
       local: true,
+      source: 'local-ollama-http',
+      codePath: CODE_PATHS.ollamaText,
+      endpoint: `${ollamaBase}/api/generate`,
       fallbackUsed: false,
       toolCallsUsed: [],
       requestId,
@@ -310,11 +439,24 @@ async function classifyViaGoogleAPI(prompt, event, taskSummary) {
   return parseClassifyJson(textPart, 'google-ai-studio', model);
 }
 
-async function inferViaGoogleAPI(prompt, maxTokens, requestId, operation) {
+async function inferViaGoogleAPI(prompt, maxTokens, requestId, operation, logger = null) {
   cloudCallCount += 1;
   const apiKey = process.env.GOOGLE_API_KEY;
   const model = getGoogleModelName();
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
+  const startedAt = Date.now();
+
+  writeProviderLog(logger, 'info', 'gemma.provider.google.start', {
+    requestId,
+    operation,
+    summary: `${operation || 'text-inference'} attempting Google AI Studio text inference.`,
+    provider: 'google-ai-studio',
+    source: 'google-ai-studio-api',
+    codePath: CODE_PATHS.googleText,
+    endpoint: `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`,
+    model,
+    maxTokens,
+  });
 
   const body = JSON.stringify({
     contents: [{ role: 'user', parts: [{ text: prompt }] }],
@@ -325,12 +467,28 @@ async function inferViaGoogleAPI(prompt, maxTokens, requestId, operation) {
   const data = JSON.parse(raw);
   const text = data?.candidates?.[0]?.content?.parts?.[0]?.text || '';
 
+  writeProviderLog(logger, 'info', 'gemma.provider.google.response', {
+    requestId,
+    operation,
+    summary: `${operation || 'text-inference'} received Google AI Studio response.`,
+    provider: 'google-ai-studio',
+    source: 'google-ai-studio-api',
+    codePath: CODE_PATHS.googleText,
+    endpoint: `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`,
+    model,
+    responseChars: text.length,
+    latencyMs: Date.now() - startedAt,
+  });
+
   return {
     text,
     meta: {
       provider: 'google-ai-studio',
       model,
       local: false,
+      source: 'google-ai-studio-api',
+      codePath: CODE_PATHS.googleText,
+      endpoint: `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`,
       fallbackUsed: false,
       toolCallsUsed: [],
       requestId,

@@ -1,6 +1,6 @@
 # Structure Guide
 
-FlowCrusade is organized by responsibility. Frontend UI lives in `src/`, local API and persistence code lives in `server/`, and the optional macOS activity collector lives in `scripts/`.
+FlowCrusade is organized by responsibility. Frontend UI lives in `src/`, local API and persistence code lives in `server/`, and the optional macOS/Windows activity collector lives in `scripts/`.
 
 ## Where to edit common changes
 
@@ -41,7 +41,7 @@ FlowCrusade is organized by responsibility. Frontend UI lives in `src/`, local A
 | Editable classification config defaults/storage | `server/monitor/classificationConfig.js` |
 | Monitor privacy filters | `server/monitor/privacy.js` |
 | Bridge from monitor events into stats | `server/monitor/statsBridge.js` |
-| macOS active-window polling agent | `scripts/desktop-monitor.js` |
+| macOS/Windows active-window polling agent | `scripts/desktop-monitor.js` |
 | Public screenshots and logo assets | `public/` |
 | Test target notes | `tests/README.md` |
 | Runtime local config example | `config.example.json` |
@@ -57,7 +57,7 @@ FlowCrusade is organized by responsibility. Frontend UI lives in `src/`, local A
 │   ├── logo.svg                 # Static app logo
 │   └── screenshots/             # README/product screenshots
 ├── scripts/
-│   └── desktop-monitor.js       # macOS active-window monitor agent
+│   └── desktop-monitor.js       # macOS/Windows active-window monitor agent
 ├── server/
 │   ├── index.js                 # Express app: Gemma breakdown, stats API, file handling
 │   ├── gemmaProvider.js         # Gemma inference router: Ollama → Google API → Transformers
@@ -126,7 +126,7 @@ Runtime data is stored under `server/data/`; runtime logs are stored under `serv
 The Monitor MVP has two separate runtime concepts:
 
 - Session: backend state that says tracking is active.
-- Agent: the local macOS process that reads active-window data.
+- Agent: the local macOS/Windows process that reads active-window data.
 
 The UI starts both through the Monitor panel. The backend starts `scripts/desktop-monitor.js`, receives events at `POST /api/monitor/event`, classifies them with `server/monitor/classifier.js` (Gemma FN-4 for ambiguous cases), stores them in `server/data/monitor.json`, writes focus/distraction increments to stats, and broadcasts updates over SSE.
 
@@ -137,8 +137,8 @@ The Settings panel edits focus/distraction app and domain rules through `src/ser
 Known Monitor follow-ups:
 
 - split test and production reporting thresholds
-- improve Firefox domain detection
-- improve macOS Accessibility permission guidance
+- improve browser domain detection precision on Windows and Firefox
+- improve macOS Accessibility and Windows PowerShell troubleshooting guidance
 - aggregate by app/domain when window titles change frequently
 - add agent crash restart/degraded-session handling
 - support multi-user or multi-device sessions if the app moves beyond local MVP use
@@ -166,7 +166,7 @@ Backend route, persistence, and monitor logic should stay under `server/`.
 |---|---|
 | `npm run dev` | Start the Vite frontend |
 | `npm run server` | Start the local Express backend on port `8787` by default |
-| `npm run monitor-agent` | Start the macOS desktop monitor agent |
+| `npm run monitor-agent` | Start the macOS/Windows desktop monitor agent |
 | `npm run lint` | Run ESLint |
 | `npm run build` | Build the frontend |
 

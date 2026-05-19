@@ -36,6 +36,11 @@ const CONTEXT_STORE_DIR = path.join(DATA_DIR, "contexts");
 const TEMP_ROOT_DIR = path.join(os.tmpdir(), "flow-crusade-gemma");
 const DEFAULT_GEMMA_MODEL_ID = "google/gemma-4-E2B-it";
 const DEFAULT_GEMMA_MODEL_DIR = path.join(__dirname, "..", "models", "gemma-4-E2B-it");
+const LOCAL_TRANSFORMERS_PROVIDER = "local-transformers";
+const LOCAL_TRANSFORMERS_SOURCE = "python-huggingface-transformers";
+const LOCAL_TRANSFORMERS_CODE_PATH = "server/index.js:callGemma";
+const LOCAL_RULES_PROVIDER = "local-rules";
+const LOCAL_RULES_CODE_PATH = "server/index.js:deterministic-fallback";
 
 const SUPPORTED_TEXT_MIME_TYPES = new Set([
   "text/plain",
@@ -391,12 +396,19 @@ function getProviderHealth() {
   const config = getGemmaConfig();
   const pInfo = getProviderInfo();
   return {
-    provider: config.provider,
+    provider: "runtime-router",
+    runtimePriority: pInfo.runtimePriority,
+    ollamaUrl: pInfo.ollamaUrl,
+    ollamaModel: pInfo.ollamaModel,
+    localTransformersProvider: LOCAL_TRANSFORMERS_PROVIDER,
+    localTransformersModel: config.modelId,
+    localTransformersModelDir: config.modelDir,
     model: config.modelId,
     modelDir: config.modelDir,
     local: true,
     modelAvailable: hasLocalGemmaModel(config),
     runnerPath: config.runnerPath,
+    localTransformersRunnerPath: config.runnerPath,
     cacheDir: config.cacheDir,
     deviceMap: config.deviceMap,
     dtype: config.dtype,
@@ -418,8 +430,7 @@ function getProviderHealth() {
     cloudFallback: pInfo.hasGoogleKey,
     cloudCallCount: pInfo.cloudCallCount,
     googleApiKeySet: pInfo.hasGoogleKey,
-    ollamaUrl: pInfo.ollamaUrl,
-    deterministicFallback: "local-rules",
+    deterministicFallback: LOCAL_RULES_PROVIDER,
   };
 }
 
@@ -1376,7 +1387,7 @@ async function callGemmaViaProvider(parts, { requestId, operation, maxNewTokens 
     return "";
   }).filter(Boolean).join("\n\n");
 
-  const result = await inferText(promptText, { maxTokens: maxNewTokens, requestId, operation });
+  const result = await inferText(promptText, { maxTokens: maxNewTokens, requestId, operation, logger: writeLog });
   if (!result) return null;
 
   return {
@@ -1397,9 +1408,14 @@ async function callGemma(parts, { requestId, operation }) {
       if (providerResult) {
         writeLog("info", "gemma.provider.success", {
           requestId,
-          summary: `${operation} succeeded via gemmaProvider.`,
+          summary: `${operation} succeeded via ${providerResult.meta?.provider || "unknown provider"}.`,
           operation,
           provider: providerResult.meta?.provider || "unknown",
+          source: providerResult.meta?.source || null,
+          codePath: providerResult.meta?.codePath || null,
+          endpoint: providerResult.meta?.endpoint || null,
+          model: providerResult.meta?.model || null,
+          local: providerResult.meta?.local ?? null,
         });
         return providerResult;
       }
@@ -1407,14 +1423,34 @@ async function callGemma(parts, { requestId, operation }) {
       writeLog("info", "gemma.provider.failed", {
         requestId,
         message: `gemmaProvider failed for ${operation}: ${providerErr.message}. Trying HuggingFace runner.`,
+        operation,
+        provider: "runtime-router",
+        source: "provider-route",
+        codePath: "server/index.js:callGemmaViaProvider",
+        nextProvider: LOCAL_TRANSFORMERS_PROVIDER,
       });
     }
+  } else {
+    writeLog("info", "gemma.provider.skipped", {
+      requestId,
+      summary: `${operation} skipped Ollama/Google provider route because native image input requires local Transformers.`,
+      operation,
+      provider: "runtime-router",
+      source: "provider-route",
+      codePath: "server/index.js:callGemma",
+      reason: "native-image-input",
+      nextProvider: LOCAL_TRANSFORMERS_PROVIDER,
+    });
   }
 
   if (!hasLocalGemmaModel(config)) {
     writeLog("info", "gemma.local.unavailable", {
       requestId,
       message: `Local Gemma model was not found at ${config.modelDir}. Using deterministic local fallback.`,
+      provider: LOCAL_TRANSFORMERS_PROVIDER,
+      source: LOCAL_TRANSFORMERS_SOURCE,
+      codePath: LOCAL_TRANSFORMERS_CODE_PATH,
+      nextProvider: LOCAL_RULES_PROVIDER,
       model: config.modelId,
       modelDir: config.modelDir,
     });
@@ -1431,10 +1467,14 @@ async function callGemma(parts, { requestId, operation }) {
   try {
     writeLog("info", "gemma.request.start", {
       requestId,
-      summary: `${operation} via local ${config.modelId}.`,
+      summary: `${operation} via ${LOCAL_TRANSFORMERS_PROVIDER} (${config.modelId}).`,
+      provider: LOCAL_TRANSFORMERS_PROVIDER,
+      source: LOCAL_TRANSFORMERS_SOURCE,
+      codePath: LOCAL_TRANSFORMERS_CODE_PATH,
       model: config.modelId,
       modelDir: config.modelDir,
       runnerPath: config.runnerPath,
+      runnerCodePath: "server/gemma_runner.py",
       python: config.python,
       cacheDir: config.cacheDir,
       maxNewTokens,
@@ -1459,8 +1499,13 @@ async function callGemma(parts, { requestId, operation }) {
 
         writeLog("info", "gemma.request.success", {
           requestId,
-          summary: `${operation} succeeded with local ${config.modelId}.`,
+          summary: `${operation} succeeded with ${LOCAL_TRANSFORMERS_PROVIDER} (${config.modelId}).`,
+          provider: LOCAL_TRANSFORMERS_PROVIDER,
+          source: LOCAL_TRANSFORMERS_SOURCE,
+          codePath: LOCAL_TRANSFORMERS_CODE_PATH,
           model: config.modelId,
+          modelDir: config.modelDir,
+          runnerPath: config.runnerPath,
           operation,
           latencyMs: Date.now() - startedAt,
           worker: "persistent",
@@ -1468,7 +1513,16 @@ async function callGemma(parts, { requestId, operation }) {
 
         return {
           candidates: [{ content: { parts: [{ text: content }] } }],
-          meta: parsed?.meta || {},
+          meta: {
+            ...(parsed?.meta || {}),
+            provider: LOCAL_TRANSFORMERS_PROVIDER,
+            model: config.modelId,
+            local: true,
+            source: LOCAL_TRANSFORMERS_SOURCE,
+            codePath: LOCAL_TRANSFORMERS_CODE_PATH,
+            runnerPath: config.runnerPath,
+            worker: "persistent",
+          },
         };
       } catch (workerError) {
         const workerTimedOut = /timed out/i.test(workerError.message || "");
@@ -1478,6 +1532,11 @@ async function callGemma(parts, { requestId, operation }) {
           message: canRetryOneShot
             ? `Persistent Gemma worker failed; trying one-shot runner.`
             : `Persistent Gemma worker failed after startup.`,
+          provider: LOCAL_TRANSFORMERS_PROVIDER,
+          source: LOCAL_TRANSFORMERS_SOURCE,
+          codePath: LOCAL_TRANSFORMERS_CODE_PATH,
+          runnerPath: config.runnerPath,
+          python: config.python,
           error: redactLongText(workerError.message, 2000),
           stack: redactLongText(workerError.stack, 4000),
           operation,
@@ -1495,15 +1554,37 @@ async function callGemma(parts, { requestId, operation }) {
       writeLog("info", "gemma.worker.skipped", {
         requestId,
         message: "Using one-shot Gemma runner for native image input to avoid Gemma4Processor persistent-worker tokenizer instability.",
+        provider: LOCAL_TRANSFORMERS_PROVIDER,
+        source: LOCAL_TRANSFORMERS_SOURCE,
+        codePath: LOCAL_TRANSFORMERS_CODE_PATH,
+        runnerPath: config.runnerPath,
         operation,
       });
     }
+
+    writeLog("info", "gemma.oneshot.start", {
+      requestId,
+      summary: `${operation} attempting one-shot ${LOCAL_TRANSFORMERS_PROVIDER}.`,
+      provider: LOCAL_TRANSFORMERS_PROVIDER,
+      source: LOCAL_TRANSFORMERS_SOURCE,
+      codePath: LOCAL_TRANSFORMERS_CODE_PATH,
+      runnerPath: config.runnerPath,
+      requestPath,
+      python: config.python,
+      model: config.modelId,
+      modelDir: config.modelDir,
+      operation,
+    });
 
     const { stdout, stderr } = await runGemmaOneShot(config, requestPath, maxNewTokens);
 
     if (stderr?.trim()) {
       writeLog("info", "gemma.runner.stderr", {
         requestId,
+        provider: LOCAL_TRANSFORMERS_PROVIDER,
+        source: LOCAL_TRANSFORMERS_SOURCE,
+        codePath: LOCAL_TRANSFORMERS_CODE_PATH,
+        runnerPath: config.runnerPath,
         message: redactLongText(stderr, 1800),
       });
     }
@@ -1516,20 +1597,37 @@ async function callGemma(parts, { requestId, operation }) {
 
     writeLog("info", "gemma.request.success", {
       requestId,
-      summary: `${operation} succeeded with local ${config.modelId}.`,
+      summary: `${operation} succeeded with one-shot ${LOCAL_TRANSFORMERS_PROVIDER} (${config.modelId}).`,
+      provider: LOCAL_TRANSFORMERS_PROVIDER,
+      source: LOCAL_TRANSFORMERS_SOURCE,
+      codePath: LOCAL_TRANSFORMERS_CODE_PATH,
       model: config.modelId,
+      modelDir: config.modelDir,
+      runnerPath: config.runnerPath,
       operation,
       latencyMs: Date.now() - startedAt,
     });
 
     return {
       candidates: [{ content: { parts: [{ text: content }] } }],
-      meta: parsed?.meta || {},
+      meta: {
+        ...(parsed?.meta || {}),
+        provider: LOCAL_TRANSFORMERS_PROVIDER,
+        model: config.modelId,
+        local: true,
+        source: LOCAL_TRANSFORMERS_SOURCE,
+        codePath: LOCAL_TRANSFORMERS_CODE_PATH,
+        runnerPath: config.runnerPath,
+        worker: "one-shot",
+      },
     };
   } catch (error) {
     writeLog("error", "gemma.request.error", {
       requestId,
       message: `${operation} failed with local ${config.modelId}.`,
+      provider: LOCAL_TRANSFORMERS_PROVIDER,
+      source: LOCAL_TRANSFORMERS_SOURCE,
+      codePath: LOCAL_TRANSFORMERS_CODE_PATH,
       model: config.modelId,
       modelDir: config.modelDir,
       runnerPath: config.runnerPath,
@@ -1603,13 +1701,20 @@ ${getFileSummaryText(file)}
 
   try {
     const data = await callGemma(parts, { requestId, operation: "initial-breakdown" });
+    const providerMeta = data.meta || {};
     const content = data.candidates?.[0]?.content?.parts?.[0]?.text ?? "";
     const parsed = safeJsonParse(content);
 
     if (!parsed || !Array.isArray(parsed.steps) || parsed.steps.length !== 3) {
       writeLog("info", "gemma.fallback.initial", {
         requestId,
-        message: "Local Gemma returned an invalid initial breakdown shape. Falling back to deterministic rules.",
+        message: "Gemma provider returned an invalid initial breakdown shape. Falling back to deterministic rules.",
+        provider: providerMeta.provider || "unknown",
+        source: providerMeta.source || null,
+        codePath: providerMeta.codePath || null,
+        model: providerMeta.model || null,
+        nextProvider: LOCAL_RULES_PROVIDER,
+        fallbackCodePath: LOCAL_RULES_CODE_PATH,
         contentPreview: redactLongText(content, 1200),
       });
       return buildLocalInitialBreakdown(taskInput, file);
@@ -1627,12 +1732,16 @@ ${getFileSummaryText(file)}
         status: "pending",
         children: [],
       })),
-      source: "gemma",
+      source: providerMeta.provider || "gemma",
     };
   } catch (error) {
     writeLog("info", "gemma.fallback.initial", {
       requestId,
       message: "Initial breakdown fell back to deterministic local generation.",
+      provider: LOCAL_RULES_PROVIDER,
+      source: "deterministic-local-rules",
+      codePath: LOCAL_RULES_CODE_PATH,
+      previousProvider: "runtime-router",
       error: error.message,
     });
     return buildLocalInitialBreakdown(taskInput, file);
@@ -1706,13 +1815,20 @@ ${getFileSummaryText(file)}
 
   try {
     const data = await callGemma(parts, { requestId, operation: "breakdown-node" });
+    const providerMeta = data.meta || {};
     const content = data.candidates?.[0]?.content?.parts?.[0]?.text ?? "";
     const parsed = safeJsonParse(content);
 
     if (!parsed || !Array.isArray(parsed.steps) || parsed.steps.length !== 3) {
       writeLog("info", "gemma.fallback.breakdown-node", {
         requestId,
-        message: "Local Gemma returned an invalid child breakdown shape. Falling back to deterministic rules.",
+        message: "Gemma provider returned an invalid child breakdown shape. Falling back to deterministic rules.",
+        provider: providerMeta.provider || "unknown",
+        source: providerMeta.source || null,
+        codePath: providerMeta.codePath || null,
+        model: providerMeta.model || null,
+        nextProvider: LOCAL_RULES_PROVIDER,
+        fallbackCodePath: LOCAL_RULES_CODE_PATH,
         contentPreview: redactLongText(content, 1200),
       });
       return buildLocalChildBreakdown(targetNode?.title);
@@ -1728,12 +1844,16 @@ ${getFileSummaryText(file)}
         status: "pending",
         children: [],
       })),
-      source: "gemma",
+      source: providerMeta.provider || "gemma",
     };
   } catch (error) {
     writeLog("info", "gemma.fallback.breakdown-node", {
       requestId,
       message: "Child breakdown fell back to deterministic local generation.",
+      provider: LOCAL_RULES_PROVIDER,
+      source: "deterministic-local-rules",
+      codePath: LOCAL_RULES_CODE_PATH,
+      previousProvider: "runtime-router",
       error: error.message,
     });
     return buildLocalChildBreakdown(targetNode?.title);
@@ -1808,13 +1928,20 @@ ${getFileSummaryText(file)}
 
   try {
     const data = await callGemma(parts, { requestId, operation: "regenerate-node" });
+    const providerMeta = data.meta || {};
     const content = data.candidates?.[0]?.content?.parts?.[0]?.text ?? "";
     const parsed = safeJsonParse(content);
 
     if (!parsed?.step) {
       writeLog("info", "gemma.fallback.regenerate-node", {
         requestId,
-        message: "Local Gemma returned an invalid regenerate-node shape. Falling back to deterministic rules.",
+        message: "Gemma provider returned an invalid regenerate-node shape. Falling back to deterministic rules.",
+        provider: providerMeta.provider || "unknown",
+        source: providerMeta.source || null,
+        codePath: providerMeta.codePath || null,
+        model: providerMeta.model || null,
+        nextProvider: LOCAL_RULES_PROVIDER,
+        fallbackCodePath: LOCAL_RULES_CODE_PATH,
       });
       return buildLocalRegeneratedStep(targetNode, slotIndex);
     }
@@ -1829,12 +1956,16 @@ ${getFileSummaryText(file)}
         status: "pending",
         children: [],
       },
-      source: "gemma",
+      source: providerMeta.provider || "gemma",
     };
   } catch (error) {
     writeLog("info", "gemma.fallback.regenerate-node", {
       requestId,
       message: "Regenerate-node fell back to deterministic local generation.",
+      provider: LOCAL_RULES_PROVIDER,
+      source: "deterministic-local-rules",
+      codePath: LOCAL_RULES_CODE_PATH,
+      previousProvider: "runtime-router",
       error: error.message,
     });
     return buildLocalRegeneratedStep(targetNode, slotIndex);
@@ -2140,9 +2271,12 @@ app.listen(PORT, () => {
   const agent = maybeStartMonitorAgent({ apiBase: `http://localhost:${PORT}` });
   const provider = getProviderHealth();
   console.log(`Local AI server running at http://localhost:${PORT}`);
-  console.log(`Gemma provider: ${provider.model} (${provider.modelAvailable ? "model available" : "deterministic fallback until model is downloaded"})`);
-  console.log(`Gemma model directory: ${provider.modelDir}`);
-  console.log(`Cloud fallback: disabled, cloud-call-count=${provider.cloudCallCount}`);
+  console.log(`Gemma runtime router: ${provider.runtimePriority.join(" -> ")}`);
+  console.log(`Ollama provider: ${provider.ollamaUrl}, model=${provider.ollamaModel}`);
+  console.log(`Local Transformers provider: model=${provider.localTransformersModel}, modelDir=${provider.localTransformersModelDir}`);
+  console.log(`Local Transformers runner: ${provider.localTransformersRunnerPath}`);
+  console.log(`Google AI Studio provider: ${provider.googleApiKeySet ? "configured" : "not configured"}, cloud-call-count=${provider.cloudCallCount}`);
+  console.log(`Deterministic fallback provider: ${provider.deterministicFallback}`);
   console.log(`Request logs: ${LOG_DIR}`);
   if (agent.started) {
     console.log(`Monitor agent restored for active session.`);

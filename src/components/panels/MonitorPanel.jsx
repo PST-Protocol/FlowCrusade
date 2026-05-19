@@ -220,8 +220,16 @@ export default function MonitorPanel({ t, theme, enabled, onToggle, showToast, a
   const isDistracted = events[0]?.classification === 'distraction';
   const agentRunning = Boolean(agentStatus?.running);
   const permissionIssue = agentStatus?.permissionIssue;
-  const monitorState = permissionIssue
-    ? 'Needs permission'
+  const platformLabel = agentStatus?.platformLabel || 'Desktop';
+  const unsupportedPlatform = agentStatus?.supported === false;
+  const attentionIssue = unsupportedPlatform
+    ? {
+        title: 'Unsupported desktop monitor platform',
+        hint: 'The desktop monitor currently supports macOS and Windows.',
+      }
+    : permissionIssue;
+  const monitorState = attentionIssue
+    ? 'Needs attention'
     : session && agentRunning
     ? 'Tracking'
     : session
@@ -283,7 +291,7 @@ export default function MonitorPanel({ t, theme, enabled, onToggle, showToast, a
               </span>
               <span className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-bold ${agentRunning ? 'bg-emerald-500/10 text-emerald-500' : 'bg-amber-500/10 text-amber-500'}`}>
                 {agentRunning ? <CheckCircle className="w-3 h-3" /> : <AlertTriangle className="w-3 h-3" />}
-                {permissionIssue ? 'Needs Permission' : agentRunning ? 'Agent Running' : 'Agent Offline'}
+                {attentionIssue ? 'Needs Attention' : agentRunning ? 'Agent Running' : 'Agent Offline'}
               </span>
             </div>
           )}
@@ -303,13 +311,15 @@ export default function MonitorPanel({ t, theme, enabled, onToggle, showToast, a
         </button>
       </div>
 
-      {permissionIssue && (
+      {attentionIssue && (
         <div className="flex gap-2 rounded-xl border border-amber-500/30 bg-amber-500/10 p-3">
           <AlertTriangle className="w-4 h-4 text-amber-500 shrink-0 mt-0.5" />
           <div>
-            <p className="text-xs font-bold text-amber-500">macOS permission needed</p>
+            <p className="text-xs font-bold text-amber-500">
+              {attentionIssue.title || `${platformLabel} monitor issue`}
+            </p>
             <p className={`text-[11px] leading-relaxed mt-1 ${t.textMuted}`}>
-              Grant Accessibility permission to Terminal, VS Code, Cursor, or Node in System Settings.
+              {attentionIssue.hint || attentionIssue.message || 'Check the desktop monitor agent logs for details.'}
             </p>
           </div>
         </div>
