@@ -1,6 +1,7 @@
-import { spawn } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
 import path from 'node:path';
 import process from 'node:process';
+import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
 import { getActiveSession } from './store.js';
 
@@ -9,7 +10,9 @@ const __dirname = path.dirname(__filename);
 const PROJECT_ROOT = path.join(__dirname, '..', '..');
 const AGENT_SCRIPT = path.join(PROJECT_ROOT, 'scripts', 'desktop-monitor.js');
 const MAX_LOG_LINES = 60;
+const PROBE_TIMEOUT_MS = 15_000;
 const SUPPORTED_PLATFORMS = new Set(['darwin', 'win32']);
+const execFileAsync = promisify(execFile);
 
 let agentProcess = null;
 let startedAt = null;
@@ -99,6 +102,16 @@ function pushLog(stream, chunk) {
   recentLogs = recentLogs.slice(-MAX_LOG_LINES);
 }
 
+function parseJsonObject(output) {
+  const text = String(output || '').trim();
+  const start = text.indexOf('{');
+  const end = text.lastIndexOf('}');
+  if (start < 0 || end < start) {
+    throw new Error(`Agent probe returned non-JSON output: ${text.slice(0, 160)}`);
+  }
+  return JSON.parse(text.slice(start, end + 1));
+}
+
 export function getAgentStatus() {
   return {
     running: isRunning(),
@@ -142,6 +155,7 @@ export function startMonitorAgent({ apiBase } = {}) {
       API_BASE: apiBase || process.env.MONITOR_AGENT_API_BASE || 'http://localhost:8787',
     },
     stdio: ['ignore', 'pipe', 'pipe'],
+    windowsHide: true,
   });
 
   agentProcess.stdout.on('data', (chunk) => pushLog('stdout', chunk));
@@ -167,6 +181,75 @@ export function startMonitorAgent({ apiBase } = {}) {
   });
 
   return getAgentStatus();
+}
+
+export async function probeMonitorAgent({ apiBase } = {}) {
+  if (!isSupportedPlatform()) {
+    const message = `Desktop monitor is only supported on macOS and Windows. Current platform: ${process.platform}`;
+    lastError = message;
+    permissionIssue = {
+      ...permissionHint(message),
+      timestamp: new Date().toISOString(),
+    };
+    return {
+      ok: false,
+      platform: process.platform,
+      platformLabel: platformLabel(),
+      supported: false,
+      error: message,
+    };
+  }
+
+  try {
+    const { stdout, stderr } = await execFileAsync(
+      process.execPath,
+      [AGENT_SCRIPT, '--probe'],
+      {
+        cwd: PROJECT_ROOT,
+        env: {
+          ...process.env,
+          API_BASE: apiBase || process.env.MONITOR_AGENT_API_BASE || 'http://localhost:8787',
+        },
+        timeout: PROBE_TIMEOUT_MS,
+        maxBuffer: 1024 * 1024,
+        windowsHide: true,
+      }
+    );
+
+    if (stderr?.trim()) pushLog('stderr', stderr);
+    const probe = parseJsonObject(stdout);
+    permissionIssue = null;
+    return {
+      ...probe,
+      supported: true,
+    };
+  } catch (error) {
+    const stderr = String(error.stderr || '').trim();
+    let parsedProbe = null;
+    try {
+      parsedProbe = stderr ? parseJsonObject(stderr) : null;
+    } catch {
+      parsedProbe = null;
+    }
+    const message = parsedProbe?.error || stderr || error.message;
+    lastError = message;
+    pushLog('stderr', message);
+    if (detectPermissionIssue(message)) {
+      permissionIssue = {
+        ...permissionHint(message),
+        timestamp: new Date().toISOString(),
+      };
+    }
+
+    return {
+      ...(parsedProbe || {}),
+      ok: false,
+      platform: process.platform,
+      platformLabel: platformLabel(),
+      supported: true,
+      error: message,
+    };
+  }
 }
 
 export function maybeStartMonitorAgent({ apiBase } = {}) {

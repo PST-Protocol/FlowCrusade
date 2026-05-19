@@ -7,9 +7,11 @@ import {
   postMonitorEvent,
   getSessionEvents,
   getMonitorAgentStatus,
+  probeMonitorAgent,
   startMonitorAgent,
   stopMonitorAgent,
   createMonitorSSE,
+  getMonitorProviderHealth,
 } from '../../services/monitorApi';
 import { recordDistraction } from '../../services/statsApi';
 
@@ -60,6 +62,8 @@ export default function MonitorPanel({ t, theme, enabled, onToggle, showToast, a
   const [showPicker, setShowPicker] = useState(false);
   const [sseConnected, setSseConnected] = useState(false);
   const [agentStatus, setAgentStatus] = useState(null);
+  const [agentProbe, setAgentProbe] = useState(null);
+  const [probeLoading, setProbeLoading] = useState(false);
   const [providerHealth, setProviderHealth] = useState(null);
   const sseRef = useRef(null);
   const onToggleRef = useRef(onToggle);
@@ -90,8 +94,7 @@ export default function MonitorPanel({ t, theme, enabled, onToggle, showToast, a
 
     // Fetch provider health for PrivacySurface
     const fetchProviderHealth = () =>
-      fetch('http://localhost:8787/api/monitor/provider/health')
-        .then((r) => r.json())
+      getMonitorProviderHealth()
         .then(setProviderHealth)
         .catch(() => {});
     fetchProviderHealth();
@@ -138,6 +141,26 @@ export default function MonitorPanel({ t, theme, enabled, onToggle, showToast, a
       sse.close();
     };
   }, []);
+
+  const runAgentProbe = async () => {
+    setProbeLoading(true);
+    try {
+      const { probe, agent } = await probeMonitorAgent();
+      setAgentProbe(probe);
+      if (agent) setAgentStatus(agent);
+      showToast?.(
+        probe?.ok
+          ? `Desktop check OK: ${probe.activeWindow?.appName || probe.platformLabel || 'desktop'}`
+          : `Desktop check failed: ${probe?.error || 'Unknown monitor error'}`,
+        probe?.ok ? 'success' : 'warning'
+      );
+    } catch (err) {
+      setAgentProbe({ ok: false, error: err.message });
+      showToast?.(`Desktop check failed: ${err.message}`, 'error');
+    } finally {
+      setProbeLoading(false);
+    }
+  };
 
   const handleToggle = async (turnOn) => {
     setLoading(true);
@@ -293,6 +316,16 @@ export default function MonitorPanel({ t, theme, enabled, onToggle, showToast, a
                 {agentRunning ? <CheckCircle className="w-3 h-3" /> : <AlertTriangle className="w-3 h-3" />}
                 {attentionIssue ? 'Needs Attention' : agentRunning ? 'Agent Running' : 'Agent Offline'}
               </span>
+              {agentStatus?.supported !== false && (
+                <button
+                  type="button"
+                  onClick={runAgentProbe}
+                  disabled={probeLoading}
+                  className={`rounded-full px-2 py-0.5 text-[10px] font-bold transition-colors disabled:opacity-50 ${t.textMuted} ${theme === 'dark' ? 'bg-white/5 hover:bg-white/10' : 'bg-slate-100 hover:bg-slate-200'}`}
+                >
+                  {probeLoading ? 'Checking...' : 'Check'}
+                </button>
+              )}
             </div>
           )}
         </div>
@@ -322,6 +355,19 @@ export default function MonitorPanel({ t, theme, enabled, onToggle, showToast, a
               {attentionIssue.hint || attentionIssue.message || 'Check the desktop monitor agent logs for details.'}
             </p>
           </div>
+        </div>
+      )}
+
+      {agentProbe && (
+        <div className={`rounded-xl border p-3 text-[11px] ${agentProbe.ok ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-500' : 'border-amber-500/30 bg-amber-500/10 text-amber-500'}`}>
+          <p className="font-bold">
+            {agentProbe.ok ? 'Desktop check passed' : 'Desktop check failed'}
+          </p>
+          <p className={`mt-1 leading-relaxed ${t.textMuted}`}>
+            {agentProbe.ok
+              ? `${agentProbe.platformLabel || 'Desktop'} can read the active window: ${agentProbe.activeWindow?.appName || 'Unknown app'}${agentProbe.activeWindow?.domain ? ` (${agentProbe.activeWindow.domain})` : ''}.`
+              : agentProbe.error || 'The desktop agent could not read the active window.'}
+          </p>
         </div>
       )}
 

@@ -6,7 +6,7 @@ import { isOllamaAvailable, hasGoogleApiKey, getProviderInfo } from '../gemmaPro
 import { createSession, endSession, getActiveSession, updateSessionLastSeen, addMonitorEvent, getSessionEvents } from './store.js';
 import { writeDistractionIncrement, writeFocusIncrement } from './statsBridge.js';
 import { addClient, broadcast } from './stream.js';
-import { getAgentStatus, startMonitorAgent, stopMonitorAgent } from './agent.js';
+import { getAgentStatus, probeMonitorAgent, startMonitorAgent, stopMonitorAgent } from './agent.js';
 
 const router = Router();
 
@@ -53,6 +53,12 @@ router.post('/session/start', (req, res) => {
 // Desktop monitor agent process
 router.get('/agent/status', (req, res) => {
   res.json({ agent: getAgentStatus() });
+});
+
+router.get('/agent/probe', async (req, res) => {
+  const requestBase = `${req.protocol}://${req.get('host') || 'localhost:8787'}`;
+  const probe = await probeMonitorAgent({ apiBase: requestBase });
+  res.json({ probe, agent: getAgentStatus() });
 });
 
 router.post('/agent/start', (req, res) => {

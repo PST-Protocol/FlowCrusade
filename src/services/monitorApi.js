@@ -61,6 +61,11 @@ export async function getMonitorAgentStatus() {
   return parseResponse(res, 'Failed to get monitor agent status');
 }
 
+export async function probeMonitorAgent() {
+  const res = await fetch(`${API_BASE}/api/monitor/agent/probe`);
+  return parseResponse(res, 'Failed to run monitor agent probe');
+}
+
 export async function startMonitorAgent() {
   const res = await fetch(`${API_BASE}/api/monitor/agent/start`, {
     method: 'POST',
@@ -108,6 +113,11 @@ export async function resetClassificationConfig() {
     headers: { 'Content-Type': 'application/json' },
   });
   return parseResponse(res, 'Failed to reset classification config');
+}
+
+export async function getMonitorProviderHealth() {
+  const res = await fetch(`${API_BASE}/api/monitor/provider/health`);
+  return parseResponse(res, 'Failed to get monitor provider health');
 }
 
 export function createMonitorSSE() {

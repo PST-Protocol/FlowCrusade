@@ -5,16 +5,25 @@ import { promisify } from 'node:util';
 const execFileAsync = promisify(execFile);
 
 const API_BASE = process.env.API_BASE || 'http://localhost:8787';
-const POLL_INTERVAL_MS = Number(process.env.POLL_INTERVAL_MS) || 15_000;
-const MIN_REPORT_SECONDS = Number(process.env.MIN_REPORT_SECONDS) || 10;
-const REPORT_CHUNK_SECONDS = Number(process.env.REPORT_CHUNK_SECONDS) || MIN_REPORT_SECONDS;
+const POLL_INTERVAL_MS = Number(process.env.POLL_INTERVAL_MS) || 2_000;
+const MIN_REPORT_SECONDS = Number(process.env.MIN_REPORT_SECONDS) || 2;
+const REPORT_CHUNK_SECONDS = Number(process.env.REPORT_CHUNK_SECONDS) || 5;
 const IDLE_BUFFER_SECONDS = 5 * 60;
+const CLI_ARGS = new Set(process.argv.slice(2));
+const PROBE_MODE = CLI_ARGS.has('--probe');
 
-const WINDOWS_POWERSHELL =
-  process.env.POWERSHELL_PATH ||
-  (process.env.SystemRoot
-    ? `${process.env.SystemRoot}\\System32\\WindowsPowerShell\\v1.0\\powershell.exe`
-    : 'powershell.exe');
+function compactUnique(values) {
+  return [...new Set(values.map((value) => String(value || '').trim()).filter(Boolean))];
+}
+
+const WINDOWS_POWERSHELL_CANDIDATES = compactUnique([
+  process.env.POWERSHELL_PATH,
+  process.env.SystemRoot || process.env.SYSTEMROOT
+    ? `${process.env.SystemRoot || process.env.SYSTEMROOT}\\System32\\WindowsPowerShell\\v1.0\\powershell.exe`
+    : '',
+  'powershell.exe',
+  'pwsh.exe',
+]);
 
 const WINDOWS_ACTIVE_WINDOW_SCRIPT = String.raw`
 $ErrorActionPreference = "Stop"
@@ -173,12 +182,27 @@ function parseJsonObject(output) {
 }
 
 async function runPowerShell(script) {
-  const { stdout } = await execFileAsync(
-    WINDOWS_POWERSHELL,
-    ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', script],
-    { windowsHide: true, maxBuffer: 1024 * 1024 }
+  let lastLaunchError = null;
+  for (const shellPath of WINDOWS_POWERSHELL_CANDIDATES) {
+    try {
+      const { stdout } = await execFileAsync(
+        shellPath,
+        ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', script],
+        { windowsHide: true, maxBuffer: 1024 * 1024 }
+      );
+      return stdout.trim();
+    } catch (err) {
+      if (err.code === 'ENOENT' || err.code === 'EPERM') {
+        lastLaunchError = err;
+        continue;
+      }
+      const stderr = String(err.stderr || '').trim();
+      throw new Error(`${shellPath}: ${stderr || err.message}`);
+    }
+  }
+  throw new Error(
+    `No PowerShell executable could be started. Tried: ${WINDOWS_POWERSHELL_CANDIDATES.join(', ')}. ${lastLaunchError?.message || ''}`
   );
-  return stdout.trim();
 }
 
 async function runAppleScript(script) {
@@ -352,6 +376,22 @@ function createPlatformMonitor() {
   throw new Error(`Desktop monitor is only supported on macOS and Windows. Current platform: ${process.platform}`);
 }
 
+async function getProbeSnapshot(platformMonitor) {
+  const idleSeconds = await platformMonitor.getIdleSeconds();
+  const win = await platformMonitor.getActiveWindow();
+  const locked = await platformMonitor.isScreenLocked(idleSeconds) || platformMonitor.isLockWindow(win);
+  return {
+    ok: true,
+    platform: process.platform,
+    platformLabel: platformMonitor.name,
+    timestamp: new Date().toISOString(),
+    idleSeconds,
+    locked,
+    activeWindow: win,
+    apiBase: API_BASE,
+  };
+}
+
 async function getActiveSession() {
   const res = await fetch(`${API_BASE}/api/monitor/session/active`);
   if (!res.ok) return null;
@@ -374,6 +414,12 @@ async function postEvent({ sessionId, appName, windowTitle, domain, timestamp, d
 
 async function main() {
   const platformMonitor = createPlatformMonitor();
+  if (PROBE_MODE) {
+    const snapshot = await getProbeSnapshot(platformMonitor);
+    console.log(JSON.stringify(snapshot));
+    return;
+  }
+
   console.log(`[monitor] Desktop monitor agent starting (${platformMonitor.name})`);
   console.log(`[monitor] API: ${API_BASE} | Poll: ${POLL_INTERVAL_MS / 1000}s | Min report: ${MIN_REPORT_SECONDS}s | Live chunk: ${REPORT_CHUNK_SECONDS}s | Idle cap: ${IDLE_BUFFER_SECONDS / 60}min`);
 
@@ -518,6 +564,15 @@ async function main() {
 }
 
 main().catch((err) => {
-  console.error('[monitor] Fatal:', err.message);
+  if (PROBE_MODE) {
+    console.error(JSON.stringify({
+      ok: false,
+      platform: process.platform,
+      timestamp: new Date().toISOString(),
+      error: err.message,
+    }));
+  } else {
+    console.error('[monitor] Fatal:', err.message);
+  }
   process.exit(1);
 });

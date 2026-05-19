@@ -164,7 +164,7 @@ Toggling **Active Monitor** on in the sidebar:
 2. Automatically launches `scripts/desktop-monitor.js`
 3. Streams classified events to the timeline in real time
 
-The agent uses native OS tooling with no extra npm packages: `osascript`/`ioreg` on macOS, and PowerShell + Win32 APIs on Windows. It detects the active app, window title, and browser domain where available. A window is only reported after 10 seconds of continuous stay; idle time is capped at 5 minutes so stepping away doesn't inflate focus scores.
+The agent uses native OS tooling with no extra npm packages: `osascript`/`ioreg` on macOS, and PowerShell + Win32 APIs on Windows. It detects the active app, window title, and browser domain where available. By default it samples every 2 seconds, reports a window after 2 seconds of continuous stay, and refreshes long-running activity in 5-second chunks; idle time is capped at 5 minutes so stepping away doesn't inflate focus scores.
 
 **Status indicators:**
 
@@ -181,12 +181,18 @@ The agent uses native OS tooling with no extra npm packages: `osascript`/`ioreg`
 - Browser domain detection is exact for macOS Chrome/Safari; Windows infers domains from visible URLs or common browser title hints, so it can be less precise
 - Gemma semantic classification requires Ollama or a Google API key; without either, classification falls back to rule-based logic
 - Single-user, single-machine, local use only
-- The 10-second reporting threshold is low by design for testing; consider 60s+ for production
+- The 2-second reporting threshold is low by design for testing; consider 60s+ for production
 
 The standalone agent is also available for debugging:
 
 ```bash
 npm run monitor-agent
+```
+
+Run a one-shot desktop access check without starting a monitor session:
+
+```bash
+npm run monitor-agent -- --probe
 ```
 
 > Do not run both the UI-managed and standalone agents at the same time — events will be duplicated.
@@ -227,6 +233,7 @@ The backend runs on `http://localhost:8787`.
 | `POST` | `/api/monitor/event` | Receive a classified activity event |
 | `GET` | `/api/monitor/events/:sessionId` | List events for a session |
 | `GET` | `/api/monitor/agent/status` | Desktop agent status |
+| `GET` | `/api/monitor/agent/probe` | One-shot desktop access check |
 | `POST` | `/api/monitor/agent/start` | Start the desktop agent |
 | `POST` | `/api/monitor/agent/stop` | Stop the desktop agent |
 | `GET` | `/api/monitor/privacy/config` | Get privacy filter config |

@@ -139,6 +139,27 @@ export function addMonitorEvent({ sessionId, appName, windowTitle, domain, durat
     local: local !== false,
   };
   data.events.push(event);
+
+  const sessionEvents = data.events.filter((e) => e.sessionId === sessionId);
+  const focusMinutes = sessionEvents
+    .filter((e) => e.classification === 'focus')
+    .reduce((sum, e) => sum + Math.ceil((e.durationSeconds || 0) / 60), 0);
+  const distractionMinutes = sessionEvents
+    .filter((e) => e.classification === 'distraction')
+    .reduce((sum, e) => sum + Math.ceil((e.durationSeconds || 0) / 60), 0);
+  data.sessions = data.sessions.map((session) =>
+    session.sessionId === sessionId
+      ? {
+          ...session,
+          summary: {
+            focusMinutes,
+            distractionMinutes,
+            eventCount: sessionEvents.length,
+          },
+        }
+      : session
+  );
+
   writeData(data);
   return event;
 }
