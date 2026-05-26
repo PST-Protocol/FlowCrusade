@@ -1,6 +1,6 @@
 <div align="center">
 
-# FlowCrusade
+# FocusTrail
 
 **AI-powered focus companion for deep work.**
 
@@ -74,8 +74,8 @@ Break any task into steps → monitor your real-time activity → see exactly wh
 ### 1. Clone and install
 
 ```bash
-git clone https://github.com/PST-Protocol/FlowCrusade.git
-cd FlowCrusade
+git clone https://github.com/PST-Protocol/FocusTrail.git
+cd FocusTrail
 npm install
 ```
 
@@ -196,7 +196,7 @@ The backend runs on `http://localhost:8787`.
 ## Project structure
 
 ```
-FlowCrusade/
+FocusTrail/
 ├── scripts/
 │   └── desktop-monitor.js          # macOS window monitor agent
 ├── server/
