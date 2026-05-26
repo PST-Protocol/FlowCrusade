@@ -1,6 +1,6 @@
 <div align="center">
 
-# FlowCrusade
+# FocusTrail
 
 **AI-powered focus companion for deep work.**
 
@@ -42,7 +42,7 @@ Break any task into steps → monitor your real-time activity → see exactly wh
 
 ```bash
 git clone https://github.com/PST-Protocol/Flow-Crusade.git
-cd FlowCrusade
+cd FocusTrail
 npm install
 ```
 
