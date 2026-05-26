@@ -51,3 +51,12 @@ server/data/
 Thumbs.db
 .vscode/
 .idea/
+
+# Local model files
+models/
+*.safetensors
+*.bin
+*.pt
+*.pth
+*.gguf
+*.onnx
