@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Local Gemma runner for FlowCrusade.
+"""Local Gemma runner for FocusTrail.
 
 This script intentionally loads only from a local model directory. It never
 downloads weights at request time, which keeps the app's inference path local.

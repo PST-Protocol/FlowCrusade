@@ -24,7 +24,7 @@ import RewardProgressModal from './components/common/RewardProgressModal';
 import LeftPanels from './components/panels/LeftPanels';
 import QuickNotesPanel from './components/panels/QuickNotesPanel';
 
-export default function FlowCrusadeApp() {
+export default function FocusTrailApp() {
   // Global States
   // Default to Day theme (user request)
   const [theme, setTheme] = useState('light');
@@ -648,8 +648,8 @@ export default function FlowCrusadeApp() {
         {/* Logo + 折叠按钮 */}
         <div className={`flex items-center mb-8 px-3 w-full ${navCollapsed || isFocusedMode ? 'justify-center' : 'justify-between'}`}>
           <div className={`flex items-center gap-2 ${t.textMain}`}>
-            <img src="/logo.svg" alt="FlowCrusade" className="w-8 h-8 shrink-0 object-contain" />
-            {!navCollapsed && !isFocusedMode && navWidth > 130 && <span className="text-base font-bold tracking-tight whitespace-nowrap">FlowCrusade</span>}
+            <img src="/logo.svg" alt="FocusTrail" className="w-8 h-8 shrink-0 object-contain" />
+            {!navCollapsed && !isFocusedMode && navWidth > 130 && <span className="text-base font-bold tracking-tight whitespace-nowrap">FocusTrail</span>}
           </div>
           {!isFocusedMode && !navCollapsed && navWidth > 130 && (
             <button onClick={() => setNavCollapsed(true)} className={`p-1.5 rounded-lg transition-colors text-indigo-400 hover:bg-indigo-500/10`} title="Collapse menu">

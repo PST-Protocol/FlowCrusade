@@ -1,6 +1,6 @@
 # Structure Guide
 
-FlowCrusade is organized by responsibility. Frontend UI lives in `src/`, local API and persistence code lives in `server/`, and the optional macOS/Windows activity collector lives in `scripts/`.
+FocusTrail is organized by responsibility. Frontend UI lives in `src/`, local API and persistence code lives in `server/`, and the optional macOS/Windows activity collector lives in `scripts/`.
 
 ## Where to edit common changes
 

@@ -32,7 +32,7 @@ using System;
 using System.Runtime.InteropServices;
 using System.Text;
 
-public static class FlowCrusadeForegroundWindow {
+public static class FocusTrailForegroundWindow {
   [DllImport("user32.dll")]
   public static extern IntPtr GetForegroundWindow();
 
@@ -44,16 +44,16 @@ public static class FlowCrusadeForegroundWindow {
 }
 "@
 
-$hwnd = [FlowCrusadeForegroundWindow]::GetForegroundWindow()
+$hwnd = [FocusTrailForegroundWindow]::GetForegroundWindow()
 if ($hwnd -eq [IntPtr]::Zero) {
   throw "No foreground window is available"
 }
 
 $titleBuilder = New-Object System.Text.StringBuilder 1024
-[void][FlowCrusadeForegroundWindow]::GetWindowText($hwnd, $titleBuilder, $titleBuilder.Capacity)
+[void][FocusTrailForegroundWindow]::GetWindowText($hwnd, $titleBuilder, $titleBuilder.Capacity)
 
 [uint32]$processId = 0
-[void][FlowCrusadeForegroundWindow]::GetWindowThreadProcessId($hwnd, [ref]$processId)
+[void][FocusTrailForegroundWindow]::GetWindowThreadProcessId($hwnd, [ref]$processId)
 $processInfo = Get-Process -Id $processId -ErrorAction SilentlyContinue
 $appName = if ($processInfo) { $processInfo.ProcessName } else { "Unknown" }
 $path = ""
@@ -78,7 +78,7 @@ Add-Type -TypeDefinition @"
 using System;
 using System.Runtime.InteropServices;
 
-public static class FlowCrusadeIdleTime {
+public static class FocusTrailIdleTime {
   [StructLayout(LayoutKind.Sequential)]
   public struct LASTINPUTINFO {
     public uint cbSize;
@@ -93,14 +93,14 @@ public static class FlowCrusadeIdleTime {
 }
 "@
 
-$lastInput = New-Object FlowCrusadeIdleTime+LASTINPUTINFO
+$lastInput = New-Object FocusTrailIdleTime+LASTINPUTINFO
 $lastInput.cbSize = [System.Runtime.InteropServices.Marshal]::SizeOf($lastInput)
-if (-not [FlowCrusadeIdleTime]::GetLastInputInfo([ref]$lastInput)) {
+if (-not [FocusTrailIdleTime]::GetLastInputInfo([ref]$lastInput)) {
   0
   exit
 }
 
-$currentTick = [int64][FlowCrusadeIdleTime]::GetTickCount()
+$currentTick = [int64][FocusTrailIdleTime]::GetTickCount()
 $lastTick = [int64]$lastInput.dwTime
 $elapsedMs = $currentTick - $lastTick
 if ($elapsedMs -lt 0) {

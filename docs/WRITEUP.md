@@ -1,4 +1,4 @@
-# FlowCrusade Access — Technical Writeup
+# FocusTrail Access — Technical Writeup
 ## Gemma 4 Good Hackathon Submission
 
 ---
@@ -7,7 +7,7 @@
 
 Task initiation — not task volume — is the real bottleneck for students with ADHD, ESL learners, and first-generation college students. A student can receive a well-structured assignment and still freeze at the blank page for hours. Existing AI tools either require a cloud subscription that leaks sensitive academic content, or they hand back a wall of text that recreates the overwhelm they started with.
 
-FlowCrusade Access is a **local-first Gemma 4 learning execution coach** that converts any assignment — a pasted prompt, an uploaded PDF, or a photo of handwritten notes — into one concrete action under five minutes. A privacy-preserving Focus Sentinel then watches the desktop and tells the student, in plain language, whether what they're doing right now is actually helping.
+FocusTrail Access is a **local-first Gemma 4 learning execution coach** that converts any assignment — a pasted prompt, an uploaded PDF, or a photo of handwritten notes — into one concrete action under five minutes. A privacy-preserving Focus Sentinel then watches the desktop and tells the student, in plain language, whether what they're doing right now is actually helping.
 
 ---
 
@@ -143,8 +143,8 @@ When Ollama returns empty text for a complex academic prompt (common with E2B on
 ## Reproducibility
 
 ```bash
-git clone https://github.com/PST-Protocol/FlowCrusade.git
-cd FlowCrusade
+git clone https://github.com/PST-Protocol/FocusTrail.git
+cd FocusTrail
 npm install
 
 # Install Ollama from https://ollama.com, then:
@@ -161,7 +161,7 @@ Open the Monitor panel, toggle Active Monitor on, and open any task to see Focus
 
 ## Tracks
 
-**Future of Education**: FlowCrusade directly addresses the task initiation failure mode that blocks ADHD and executive-function-challenged students from starting academic work. The coach converts overwhelming assignments into a grounded, stepwise plan and monitors attention in real time.
+**Future of Education**: FocusTrail directly addresses the task initiation failure mode that blocks ADHD and executive-function-challenged students from starting academic work. The coach converts overwhelming assignments into a grounded, stepwise plan and monitors attention in real time.
 
 **Digital Equity & Inclusivity**: The entire inference stack runs locally on consumer hardware (tested on 8 GB MacBook Air). No subscription. No data leaving the device. No reliable internet required for the core workflow. The target users — neurodivergent students, ESL learners, first-generation college students — are precisely the populations who benefit most from an AI tool that doesn't require cloud access or premium hardware.
 

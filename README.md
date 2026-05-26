@@ -1,6 +1,6 @@
 <div align="center">
 
-# FlowCrusade
+# FocusTrail
 
 **Local-first Gemma 4 learning coach for deep work.**
 
@@ -77,8 +77,8 @@ Break any task into steps → monitor your real-time activity with context-sensi
 ### 1. Clone and install
 
 ```bash
-git clone https://github.com/PST-Protocol/FlowCrusade.git
-cd FlowCrusade
+git clone https://github.com/PST-Protocol/FocusTrail.git
+cd FocusTrail
 npm install
 ```
 
@@ -249,7 +249,7 @@ The backend runs on `http://localhost:8787`.
 ## Project structure
 
 ```
-FlowCrusade/
+FocusTrail/
 ├── scripts/
 │   └── desktop-monitor.js          # macOS/Windows window monitor agent
 ├── server/
