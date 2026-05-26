@@ -42,6 +42,8 @@ export function loadSettings() {
     theme: 'light',
     monitorEnabled: true,
     distractThreshold: 5,
-    notifications: true
+    notifications: true,
+    storageMode: 'local',
+    rankingOptIn: false
   };
 }

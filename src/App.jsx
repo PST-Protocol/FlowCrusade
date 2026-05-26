@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import {
   Calendar as CalendarIcon, BarChart2, Activity, ChevronRight, Home,
   CheckCircle, Edit3, Zap, ShieldAlert, Menu, PanelLeftClose,
-  Settings as SettingsIcon, X
+  Settings as SettingsIcon, X, UserCircle
 } from 'lucide-react';
 
 import { THEMES } from './data/themes';
@@ -21,6 +21,7 @@ import ViewCE from './components/views/ViewCE';
 import NavItem from './components/common/NavItem';
 import ProgressRing from './components/common/ProgressRing';
 import RewardProgressModal from './components/common/RewardProgressModal';
+import CompletionCelebration from './components/common/CompletionCelebration';
 import LeftPanels from './components/panels/LeftPanels';
 import QuickNotesPanel from './components/panels/QuickNotesPanel';
 
@@ -41,14 +42,14 @@ export default function FocusTrailApp() {
   const [isNotesSidebarOpen, setIsNotesSidebarOpen] = useState(true); // desktop sidebar
   const [notesSidebarWidth, setNotesSidebarWidth] = useState(320); // default 320px, resizable
   const [navWidth, setNavWidth] = useState(180); // left nav width, resizable
-  const [navCollapsed, setNavCollapsed] = useState(false); // 左侧导航折叠
+  const [navCollapsed, setNavCollapsed] = useState(false); // Left navigation collapse state
 
-  // Tasks: 每次变化自动保存到 localStorage
+  // Tasks: automatically save every change to localStorage
   useEffect(() => {
     localStorage.setItem('fc_tasks', JSON.stringify(tasks));
   }, [tasks]);
 
-  // Quick Notes: 每次 notes 变化自动保存到 localStorage
+  // Quick Notes: automatically save every change to localStorage
   useEffect(() => {
     localStorage.setItem('fc_notes', JSON.stringify(notes));
   }, [notes]);
@@ -59,6 +60,7 @@ export default function FocusTrailApp() {
   const [isFocusedMode, setIsFocusedMode] = useState(false); // Collapses sidebars
   const [toast, setToast] = useState(null);
   const [isRewardsOpen, setIsRewardsOpen] = useState(false);
+  const [celebration, setCelebration] = useState(null);
   const [composerText, setComposerText] = useState('');
   const [composerFile, setComposerFile] = useState(null);
   const [isAiWorking, setIsAiWorking] = useState(false);
@@ -256,10 +258,12 @@ export default function FocusTrailApp() {
         completedAt: new Date().toISOString(),
       });
       setStats(prev => ({ ...prev, ...updatedStats }));
+      setCelebration({ taskTitle: taskToComplete.title, gained: Math.max(10, Math.round(minutes * 0.4)), streak: updatedStats.streak || 0, levelName: getLevelForMinutes(updatedStats.focusScore || 0).name });
     } catch (error) {
       mergeStatsFallback({
         taskCompletionMinutes: (stats.taskCompletionMinutes || 0) + minutes,
       });
+      setCelebration({ taskTitle: taskToComplete.title, gained: Math.max(10, Math.round(minutes * 0.4)), streak: stats.streak || 0, levelName: getLevelForMinutes(stats.focusScore || 0).name });
       showToast('Backend completion save failed, using local fallback.', 'warning');
     }
   };
@@ -615,7 +619,7 @@ export default function FocusTrailApp() {
       <nav className={`flex flex-col items-center py-6 ${t.bgPanel} ${t.border} border-r transition-colors duration-300 z-40 shrink-0 relative`}
         style={{ width: isFocusedMode ? 64 : navCollapsed ? 56 : navWidth }}>
         
-        {/* 右侧拖拽条 */}
+        {/* Right resize handle */}
         {!isFocusedMode && !navCollapsed && (
           <div
             className="absolute right-0 top-0 bottom-0 w-1.5 cursor-col-resize z-50 group"
@@ -635,7 +639,7 @@ export default function FocusTrailApp() {
             <div className={`w-0.5 h-full mx-auto transition-colors group-hover:bg-indigo-500/50 ${t.border}`}></div>
           </div>
         )}
-        {/* Logo + 折叠按钮 */}
+        {/* Logo + collapse button */}
         <div className={`flex items-center mb-8 px-3 w-full ${navCollapsed || isFocusedMode ? 'justify-center' : 'justify-between'}`}>
           <div className={`flex items-center gap-2 ${t.textMain}`}>
             <img src="/logo.svg" alt="FocusTrail" className="w-8 h-8 shrink-0 object-contain" />
@@ -647,7 +651,7 @@ export default function FocusTrailApp() {
             </button>
           )}
         </div>
-        {/* 折叠时：hamburger 按钮展开 */}
+        {/* When collapsed: hamburger button expands the nav */}
         {navCollapsed && !isFocusedMode && (
           <button onClick={() => setNavCollapsed(false)} className="mb-4 p-2 rounded-lg transition-colors text-indigo-400 hover:bg-indigo-500/10" title="Expand menu">
             <Menu className="w-5 h-5" />
@@ -660,6 +664,7 @@ export default function FocusTrailApp() {
           <NavItem t={t} icon={<BarChart2/>} label="Statistics" active={activePanel === 'stats'} isFocusedMode={isFocusedMode} showLabel={!navCollapsed && navWidth > 120} onClick={() => setActivePanel(activePanel === 'stats' ? null : 'stats')} />
           <NavItem t={t} icon={<Activity/>} label="Monitor" active={activePanel === 'monitor'} isFocusedMode={isFocusedMode} showLabel={!navCollapsed && navWidth > 120} onClick={() => setActivePanel(activePanel === 'monitor' ? null : 'monitor')} />
           <NavItem t={t} icon={<SettingsIcon/>} label="Settings" active={activePanel === 'settings'} isFocusedMode={isFocusedMode} showLabel={!navCollapsed && navWidth > 120} onClick={() => setActivePanel(activePanel === 'settings' ? null : 'settings')} />
+          <NavItem t={t} icon={<UserCircle/>} label="Account" active={activePanel === 'account'} isFocusedMode={isFocusedMode} showLabel={!navCollapsed && navWidth > 120} onClick={() => setActivePanel(activePanel === 'account' ? null : 'account')} />
         </div>
 
         <div className="flex-grow" />
@@ -820,7 +825,7 @@ export default function FocusTrailApp() {
         <aside className={`flex-col border-l z-10 shrink-0 hidden lg:flex relative ${t.bgPanel} ${t.border}`}
           style={{ width: notesSidebarWidth }}
         >
-          {/* 左边拖拽条 */}
+          {/* Left resize handle */}
           <div
             className="absolute left-0 top-0 bottom-0 w-2 cursor-col-resize z-20 group -ml-1"
             onMouseDown={(e) => {
@@ -851,7 +856,7 @@ export default function FocusTrailApp() {
           </div>
         </aside>
       )}
-      {/* Desktop: Quick Notes 关闭后的小按钮，点击重新打开 */}
+      {/* Desktop: small button to reopen Quick Notes after closing */}
       {!isNotesSidebarOpen && !isFocusedMode && (
         <button
           onClick={() => setIsNotesSidebarOpen(true)}
@@ -897,6 +902,7 @@ export default function FocusTrailApp() {
       )}
 
       <RewardProgressModal open={isRewardsOpen} onClose={closeRewards} t={t} theme={theme} stats={stats} />
+      <CompletionCelebration open={Boolean(celebration)} onClose={() => setCelebration(null)} taskTitle={celebration?.taskTitle} gained={celebration?.gained} streak={celebration?.streak} levelName={celebration?.levelName} theme={theme} />
 
       {/* Global Toast */}
       {toast && (
