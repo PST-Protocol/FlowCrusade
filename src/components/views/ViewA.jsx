@@ -16,7 +16,7 @@ export default function ViewA({ t, theme, value, onValueChange, file, onFileSele
     <div className="flex-1 flex flex-col items-center justify-center max-w-3xl mx-auto w-full animate-fade-in">
       <div className="text-center mb-12">
         <div className={`w-16 h-16 rounded-2xl mx-auto mb-6 flex items-center justify-center border ${theme === 'dark' ? 'bg-[#1c202a] border-white/10 shadow-[0_0_30px_rgba(99,102,241,0.1)]' : 'bg-white border-slate-200 shadow-xl shadow-indigo-100'}`}>
-           <img src="/logo.svg" alt="FlowCrusade" className="w-10 h-10 object-contain" />
+           <img src="/logo.svg" alt="FocusTrail" className="w-10 h-10 object-contain" />
         </div>
         <h1 className={`text-3xl md:text-4xl font-bold tracking-tight mb-4 ${t.textMain}`}>What are we crushing today?</h1>
         <p className={`text-lg ${t.textMuted}`}>Type a task, upload a file, or do both. Empty input is blocked unless a file is attached.</p>
