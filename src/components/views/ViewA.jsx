@@ -11,7 +11,57 @@ import {
 
 import ChatInput from '../common/ChatInput';
 
-export default function ViewA({ t, theme, value, onValueChange, file, onFileSelect, onFileClear, onSubmit, isSubmitting }) {
+export default function ViewA({ t, theme, value, onValueChange, file, onFileSelect, onFileClear, onSubmit, isSubmitting, submissionPreview }) {
+  if (isSubmitting && submissionPreview) {
+    return (
+      <div className="flex-1 flex flex-col max-w-3xl mx-auto w-full animate-fade-in py-8 md:py-14">
+        <div className="flex items-center gap-3 mb-10">
+          <div className={`w-10 h-10 rounded-xl flex items-center justify-center border ${theme === 'dark' ? 'bg-[#1c202a] border-white/10' : 'bg-white border-slate-200 shadow-sm'}`}>
+            <img src="/logo.svg" alt="FocusTrail" className="w-7 h-7 object-contain" />
+          </div>
+          <div>
+            <div className={`font-bold ${t.textMain}`}>FocusTrail</div>
+            <div className={`text-xs ${t.textMuted}`}>Building your execution path</div>
+          </div>
+        </div>
+
+        <div className="flex-1 space-y-6">
+          <div className="flex justify-end animate-slide-up">
+            <div className="max-w-[82%] rounded-3xl rounded-tr-md bg-indigo-600 text-white px-5 py-4 shadow-lg shadow-indigo-500/10">
+              {submissionPreview.text && <p className="text-base leading-relaxed">{submissionPreview.text}</p>}
+              {submissionPreview.fileName && (
+                <div className="mt-3 rounded-xl bg-white/10 border border-white/15 px-3 py-2 text-sm font-semibold flex items-center gap-2">
+                  <Paperclip className="w-4 h-4" /> {submissionPreview.fileName}
+                </div>
+              )}
+              <div className="text-[11px] text-indigo-100 mt-2 text-right">Sent</div>
+            </div>
+          </div>
+
+          <div className="flex items-start gap-3 animate-slide-up" style={{ animationDelay: '100ms' }}>
+            <div className={`w-9 h-9 rounded-xl shrink-0 flex items-center justify-center border ${theme === 'dark' ? 'bg-[#1c202a] border-white/10' : 'bg-white border-slate-200'}`}>
+              <img src="/logo.svg" alt="" className="w-6 h-6 object-contain" />
+            </div>
+            <div className={`max-w-[82%] rounded-3xl rounded-tl-md border px-5 py-4 ${t.bgCard} ${t.border}`}>
+              <div className={`font-semibold ${t.textMain}`}>Turning this into a focused 3-step plan…</div>
+              <p className={`text-sm mt-1 ${t.textMuted}`}>Reviewing the goal, scope, and best place to start.</p>
+              <div className="flex gap-1.5 mt-4" aria-label="FocusTrail is generating">
+                {[0, 1, 2].map((index) => (
+                  <span key={index} className="w-2 h-2 rounded-full bg-indigo-500 animate-pulse" style={{ animationDelay: `${index * 180}ms` }} />
+                ))}
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div className={`mt-10 rounded-full border px-5 py-4 flex items-center justify-between opacity-70 ${t.bgInput} ${t.border}`}>
+          <span className={`text-sm ${t.textMuted}`}>Your task was sent. FocusTrail is working on it.</span>
+          <span className="w-5 h-5 rounded-full border-2 border-indigo-500 border-t-transparent animate-spin" />
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="flex-1 flex flex-col items-center justify-center max-w-3xl mx-auto w-full animate-fade-in">
       <div className="text-center mb-12">

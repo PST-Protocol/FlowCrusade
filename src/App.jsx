@@ -73,6 +73,7 @@ export default function FocusTrailApp() {
   const [composerText, setComposerText] = useState('');
   const [composerFile, setComposerFile] = useState(null);
   const [isAiWorking, setIsAiWorking] = useState(false);
+  const [submissionPreview, setSubmissionPreview] = useState(null);
   const [isRecoveryOpen, setIsRecoveryOpen] = useState(false);
   const [recoveryActiveTaskId, setRecoveryActiveTaskId] = useState(null);
   const [recoveryHistory, setRecoveryHistory] = useState(loadRecoveryHistory);
@@ -416,7 +417,11 @@ export default function FocusTrailApp() {
 
     try {
       setIsAiWorking(true);
-      showToast('Asking Gemma 4… this may take ~30s', 'loading');
+      setToast(null);
+      setSubmissionPreview({
+        text: trimmedInput,
+        fileName: composerFile?.name || null,
+      });
 
       const filePayload = composerFile
         ? {
@@ -427,11 +432,14 @@ export default function FocusTrailApp() {
           }
         : null;
 
-      const result = await postBreakdownRequest({
-        mode: 'initial',
-        taskInput: trimmedInput,
-        file: filePayload,
-      });
+      const [result] = await Promise.all([
+        postBreakdownRequest({
+          mode: 'initial',
+          taskInput: trimmedInput,
+          file: filePayload,
+        }),
+        new Promise((resolve) => setTimeout(resolve, 450)),
+      ]);
 
       const newTaskId = `task_${Date.now()}`;
       const newTask = {
@@ -458,9 +466,11 @@ export default function FocusTrailApp() {
       setIsFocusedMode(true);
       setComposerText('');
       setComposerFile(null);
+      setSubmissionPreview(null);
       showToast('Task broken into 3 subtasks');
     } catch (error) {
       console.error(error);
+      setSubmissionPreview(null);
       showToast(error.message || 'Local breakdown failed', 'warning');
     } finally {
       setIsAiWorking(false);
@@ -859,6 +869,7 @@ export default function FocusTrailApp() {
               onFileClear={() => setComposerFile(null)}
               onSubmit={handleInitialSend}
               isSubmitting={isAiWorking}
+              submissionPreview={submissionPreview}
             />
           )}
 
