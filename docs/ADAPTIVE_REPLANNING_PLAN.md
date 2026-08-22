@@ -321,3 +321,39 @@ The MVP is complete when:
 - autonomous plan mutation without confirmation;
 - learned personalization before sufficient user data exists.
 
+## 15. Next Product Milestone: English / Simplified Chinese
+
+After the adaptive recovery MVP is stable, add a real application-wide language
+system instead of mixing English and Chinese strings inside individual screens.
+
+Scope:
+
+- add an `English / 简体中文` selector in Settings;
+- persist the selected locale in `localStorage`;
+- centralize UI copy in locale dictionaries with English fallback;
+- cover task input, breakdown, focus mode, adaptive recovery, Monitor, Calendar,
+  Statistics, Settings, Quick Notes, rewards, toasts, and empty/error states;
+- send `locale` with `/api/breakdown` and `/api/replan` requests;
+- require model-generated task titles, descriptions, recovery reasons, and next
+  steps to use the selected language;
+- localize deterministic server fallbacks and validation errors;
+- preserve user-authored task text without automatically translating it;
+- verify responsive layouts for longer English and Chinese labels;
+- add tests for locale persistence, missing-key fallback, and bilingual AI/fallback
+  response consistency.
+
+Recommended delivery:
+
+1. Build the locale provider, dictionaries, Settings selector, and persistence.
+2. Localize the four core flows: task input, breakdown, focus, and recovery.
+3. Add locale-aware model prompts and deterministic fallbacks.
+4. Localize secondary panels and complete visual regression testing.
+
+Acceptance criteria:
+
+- the app switches language without a reload;
+- the choice survives refresh;
+- no screen mixes languages because of application-owned copy;
+- AI and local-rule outputs follow the selected locale;
+- missing translations safely fall back to English;
+- both locales pass the production build and core-flow tests.
