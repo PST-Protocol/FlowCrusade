@@ -47,6 +47,7 @@ models/
 /.env
 .env.*
 !.env.example
+!.env.web-demo.example
 
 # OS / editor
 .DS_Store

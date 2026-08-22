@@ -1,6 +1,12 @@
-const API_BASE = import.meta.env.VITE_API_BASE || 'http://localhost:8787';
+import { API_BASE, WEB_DEMO_MODE } from '../config/runtime';
+import { createDemoRecovery } from './demoFallback';
 
 export async function postReplanRequest(payload, { signal } = {}) {
+  if (WEB_DEMO_MODE || !API_BASE) {
+    await new Promise((resolve) => setTimeout(resolve, 600));
+    if (signal?.aborted) throw new DOMException('Request aborted', 'AbortError');
+    return createDemoRecovery(payload);
+  }
   const response = await fetch(`${API_BASE}/api/replan`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -21,4 +27,3 @@ export async function postReplanRequest(payload, { signal } = {}) {
   }
   return data;
 }
-

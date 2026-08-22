@@ -24,6 +24,7 @@ import { postBreakdownRequest } from './services/breakdownApi';
 import { postReplanRequest } from './services/replanApi';
 import { fetchStats, recordFocusSession, recordCompletedTask } from './services/statsApi';
 import './styles/runtimeAnimations';
+import { API_BASE, HAS_REMOTE_API, WEB_DEMO_MODE } from './config/runtime';
 
 import ViewA from './components/views/ViewA';
 import ViewB from './components/views/ViewB';
@@ -93,7 +94,7 @@ export default function FocusTrailApp() {
 
   // Real-time stats updates from the monitor agent via SSE
   useEffect(() => {
-    const API_BASE = import.meta.env.VITE_API_BASE || 'http://localhost:8787';
+    if (!HAS_REMOTE_API) return undefined;
     const sse = new EventSource(`${API_BASE}/api/monitor/stream`);
     sse.addEventListener('stats.updated', (e) => {
       try {
@@ -247,6 +248,14 @@ export default function FocusTrailApp() {
   const handleFocusSessionComplete = async ({ task, minutes, startedAt, endedAt }) => {
     if (!task?.id || !minutes) return;
 
+    if (WEB_DEMO_MODE) {
+      mergeStatsFallback({
+        focusTimeToday: (stats.focusTimeToday || 0) + minutes,
+        sessions: (stats.sessions || 0) + 1,
+      });
+      return;
+    }
+
     try {
       const updatedStats = await recordFocusSession({
         taskId: task.id,
@@ -270,6 +279,13 @@ export default function FocusTrailApp() {
 
     markTaskDoneLocally(taskToComplete);
     const minutes = getTaskEstimatedMinutes(taskToComplete);
+
+    if (WEB_DEMO_MODE) {
+      mergeStatsFallback({
+        taskCompletionMinutes: (stats.taskCompletionMinutes || 0) + minutes,
+      });
+      return;
+    }
 
     try {
       const updatedStats = await recordCompletedTask({
@@ -886,6 +902,7 @@ export default function FocusTrailApp() {
               isSubmitting={isAiWorking}
               submissionPreview={submissionPreview}
               onCancelSubmission={handleCancelInitialSend}
+              webDemoMode={WEB_DEMO_MODE}
             />
           )}
 

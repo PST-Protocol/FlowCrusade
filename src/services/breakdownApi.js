@@ -1,5 +1,14 @@
+import { API_BASE, WEB_DEMO_MODE } from '../config/runtime';
+import { createDemoBreakdown } from './demoFallback';
+
 export async function postBreakdownRequest(payload, { signal } = {}) {
-  const response = await fetch('http://localhost:8787/api/breakdown', {
+  if (WEB_DEMO_MODE || !API_BASE) {
+    await new Promise((resolve) => setTimeout(resolve, 700));
+    if (signal?.aborted) throw new DOMException('Request aborted', 'AbortError');
+    return createDemoBreakdown(payload);
+  }
+
+  const response = await fetch(`${API_BASE}/api/breakdown`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload),

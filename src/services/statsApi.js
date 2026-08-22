@@ -1,4 +1,4 @@
-const API_BASE = import.meta.env.VITE_API_BASE || 'http://localhost:8787';
+import { API_BASE, WEB_DEMO_MODE } from '../config/runtime';
 
 async function parseResponse(res, fallbackMessage) {
   let data = null;
@@ -16,11 +16,13 @@ async function parseResponse(res, fallbackMessage) {
 }
 
 export async function fetchStats() {
+  if (WEB_DEMO_MODE || !API_BASE) return {};
   const res = await fetch(`${API_BASE}/api/stats`);
   return parseResponse(res, 'Failed to fetch stats');
 }
 
 export async function recordFocusSession(payload) {
+  if (WEB_DEMO_MODE || !API_BASE) return {};
   const res = await fetch(`${API_BASE}/api/stats/focus-session`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -30,6 +32,7 @@ export async function recordFocusSession(payload) {
 }
 
 export async function recordCompletedTask(payload) {
+  if (WEB_DEMO_MODE || !API_BASE) return {};
   const res = await fetch(`${API_BASE}/api/stats/completed-task`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -39,6 +42,7 @@ export async function recordCompletedTask(payload) {
 }
 
 export async function recordDistraction(payload) {
+  if (WEB_DEMO_MODE || !API_BASE) return {};
   const res = await fetch(`${API_BASE}/api/stats/distraction`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },

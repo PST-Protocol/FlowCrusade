@@ -14,6 +14,7 @@ import {
   getMonitorProviderHealth,
 } from '../../services/monitorApi';
 import { recordDistraction } from '../../services/statsApi';
+import { WEB_DEMO_MODE } from '../../config/runtime';
 
 const DISTRACTION_SOURCES = ['Instagram', 'TikTok', 'Reddit', 'YouTube', 'Email', 'Twitter/X', 'Other'];
 
@@ -55,7 +56,31 @@ function getActivityLabel(event, fallback) {
   return event?.appName || event?.windowTitle || fallback;
 }
 
-export default function MonitorPanel({ t, theme, enabled, onToggle, showToast, activeTask }) {
+export default function MonitorPanel(props) {
+  if (WEB_DEMO_MODE) return <WebDemoMonitorNotice {...props} />;
+  return <DesktopMonitorPanel {...props} />;
+}
+
+function WebDemoMonitorNotice({ t }) {
+  return (
+    <div className="space-y-5">
+      <div className={`rounded-2xl border p-5 ${t.bgCard} ${t.border}`}>
+        <div className="w-11 h-11 rounded-xl bg-indigo-500/10 text-indigo-500 flex items-center justify-center mb-4">
+          <WifiOff className="w-5 h-5" />
+        </div>
+        <h3 className={`text-lg font-black ${t.textMain}`}>Focus monitoring is a Desktop feature</h3>
+        <p className={`text-sm leading-relaxed mt-2 ${t.textMuted}`}>
+          Browsers cannot securely read activity from other apps. The Desktop version uses an opt-in local agent to classify the active window while keeping activity data on the device.
+        </p>
+      </div>
+      <div className="rounded-2xl border border-emerald-500/20 bg-emerald-500/10 p-4 text-sm text-emerald-600">
+        Task planning, focus timers, adaptive recovery, notes, and local progress remain available in this Web Demo.
+      </div>
+    </div>
+  );
+}
+
+function DesktopMonitorPanel({ t, theme, enabled, onToggle, showToast, activeTask }) {
   const [session, setSession] = useState(null);
   const [events, setEvents] = useState([]);
   const [loading, setLoading] = useState(false);
