@@ -95,7 +95,7 @@ test('deterministic fallback reports infeasible must-keep constraints', () => {
   }));
   const proposal = buildDeterministicReplan(request);
   assert.equal(proposal.feasible, false);
-  assert.match(proposal.summary, /缺少/);
+  assert.match(proposal.summary, /still needs/);
 });
 
 test('model proposal normalization rejects deferring must-keep work', () => {

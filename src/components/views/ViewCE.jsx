@@ -59,7 +59,7 @@ export default function ViewCE({ t, theme, rootTask, path, onBreakdown, onRegene
         </div>
         <div className="flex items-center gap-2">
           <button onClick={() => onOpenRecovery?.(currentContext.id)} className="px-4 py-2 rounded-xl text-sm font-semibold flex items-center gap-2 border border-amber-400/30 bg-amber-500/10 text-amber-600 hover:bg-amber-500/20 transition-colors">
-            <Clock className="w-4 h-4" /> 计划被打乱了
+            <Clock className="w-4 h-4" /> My plan changed
           </button>
           <button onClick={() => onRegenerate(currentContext.id)} className={`px-4 py-2 rounded-xl text-sm font-semibold flex items-center gap-2 transition-colors ${t.secondaryBtn}`}>
             <RefreshCw className="w-4 h-4" /> Regenerate

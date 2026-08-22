@@ -181,7 +181,7 @@ export default function FocusDetailView({ t, theme, task, onComplete, onBack, on
               <RefreshCw className="w-5 h-5" /> Regenerate
             </button>
             <button onClick={() => { setIsActive(false); onOpenRecovery?.(); }} className="px-6 py-3 rounded-xl bg-violet-500/10 border border-violet-500/20 text-violet-500 font-bold hover:bg-violet-500/20 transition-colors flex items-center justify-center gap-2 w-full">
-              <Clock className="w-5 h-5" /> 计划被打乱了
+              <Clock className="w-5 h-5" /> My plan changed
             </button>
             <button onClick={handleComplete} className="px-6 py-3 rounded-xl bg-emerald-500/10 border border-emerald-500/20 text-emerald-500 font-bold hover:bg-emerald-500/20 transition-colors flex items-center justify-center gap-2 w-full">
               <CheckCircle className="w-5 h-5" /> Mark Completed

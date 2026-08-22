@@ -641,7 +641,7 @@ export default function FocusTrailApp() {
   };
 
   const generateRecovery = async (input) => {
-    if (!activeRootTask) throw new Error('请先选择一个需要恢复的计划。');
+    if (!activeRootTask) throw new Error('Select a plan before starting recovery.');
     return postReplanRequest(buildRecoveryContext(activeRootTask, input));
   };
 
@@ -649,7 +649,7 @@ export default function FocusTrailApp() {
     if (!activeRootTask) return;
     const validation = validateRecoveryProposal(activeRootTask, proposal, Number(activeRootTask.planVersion) || 1);
     if (!validation.valid) {
-      showToast(`恢复方案已失效：${validation.errors[0]}`, 'warning');
+      showToast(`This recovery plan is no longer valid: ${validation.errors[0]}`, 'warning');
       return;
     }
     try {
@@ -664,9 +664,9 @@ export default function FocusTrailApp() {
       setPath([updatedRoot.id, ...nextPath]);
       setIsFocusedMode(true);
       setIsRecoveryOpen(false);
-      showToast('计划已修复，已带你回到新的下一步。');
+      showToast('Plan repaired. Your new next step is ready.');
     } catch (error) {
-      showToast(error.message || '无法应用恢复方案。', 'warning');
+      showToast(error.message || 'The recovery plan could not be applied.', 'warning');
     }
   };
 
@@ -674,14 +674,14 @@ export default function FocusTrailApp() {
     if (!activeRootTask) return;
     const record = recoveryHistory.find((item) => item.rootTaskId === activeRootTask.id);
     if (!record?.beforeSnapshot) {
-      showToast('当前计划没有可撤销的恢复记录。', 'warning');
+      showToast('There is no recovery to undo for this plan.', 'warning');
       return;
     }
     setTasks((current) => current.map((task) => task.id === activeRootTask.id ? record.beforeSnapshot : task));
     setRecoveryHistory((current) => current.filter((item) => item.id !== record.id));
     setPath([activeRootTask.id]);
     setIsRecoveryOpen(false);
-    showToast('已撤销上次计划恢复。');
+    showToast('The last recovery was undone.');
   };
 
 

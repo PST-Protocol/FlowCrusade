@@ -71,7 +71,7 @@ export function buildDeterministicReplan(request) {
         operation: 'update',
         targetId: node.id,
         patch: { estimatedMinutes: minimum },
-        reason: '缩小当前步骤范围，先完成最小可交付结果。',
+        reason: 'Reduce this step to its smallest useful deliverable.',
       });
       remaining -= node.estimatedMinutes - minimum;
     }
@@ -93,7 +93,7 @@ export function buildDeterministicReplan(request) {
       operation: 'defer',
       targetId: node.id,
       patch: { deferredUntil: request.deadline ? request.deadline.slice(0, 10) : 'next-session' },
-      reason: '该步骤优先级较低，延后以保护当前核心交付。',
+      reason: 'Defer this lower-priority step to protect the core deliverable.',
     });
   }
 
@@ -105,9 +105,9 @@ export function buildDeterministicReplan(request) {
     proposalId: crypto.randomUUID(),
     basePlanVersion: request.planVersion,
     summary: feasible
-      ? '保留已完成内容，压缩或延后受影响步骤，先回到最关键的下一步。'
-      : `当前仍缺少 ${remaining - request.availableMinutes} 分钟，需要延长截止时间或减少必做范围。`,
-    assumptions: ['已完成任务不会被修改。', '优先保留用户标记的必做任务。'],
+      ? 'Completed work is preserved while affected steps are shortened or deferred so you can restart with one clear action.'
+      : `The plan still needs ${remaining - request.availableMinutes} more minutes. Extend the deadline or reduce the required scope.`,
+    assumptions: ['Completed tasks will not be changed.', 'User-selected must-keep tasks are protected first.'],
     changes,
     nextStepId: next?.id || request.activeTaskId,
     remainingMinutes: Math.max(0, remaining),
@@ -185,7 +185,7 @@ export function normalizeModelProposal(parsed, request) {
   return {
     proposalId: crypto.randomUUID(),
     basePlanVersion: request.planVersion,
-    summary: String(parsed.summary || '已根据当前约束修复计划。').slice(0, 500),
+    summary: String(parsed.summary || 'The plan was repaired around the current constraints.').slice(0, 500),
     assumptions: Array.isArray(parsed.assumptions) ? parsed.assumptions.slice(0, 5).map(String) : [],
     changes,
     nextStepId: parsed.nextStepId,

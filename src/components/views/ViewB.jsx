@@ -88,7 +88,7 @@ export default function ViewB({ t, theme, task, tasks, onBreakdown, onSwitchTask
             )}
             {onOpenRecovery && (
               <button onClick={onOpenRecovery} className="inline-flex items-center justify-center gap-2 px-6 py-4 font-bold rounded-xl border border-amber-400/30 bg-amber-500/10 text-amber-600 hover:bg-amber-500/20 transition-all">
-                <RefreshCw className="w-4 h-4" /><span>计划被打乱了</span>
+                <RefreshCw className="w-4 h-4" /><span>My plan changed</span>
               </button>
             )}
           </div>
