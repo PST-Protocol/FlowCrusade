@@ -10,8 +10,18 @@ import { INITIAL_STATS } from './data/initialData';
 import { getLevelForMinutes, getRewardBounds, clamp01, formatMins } from './data/rewards';
 import { loadTasks, loadNotes, loadHistory, loadSettings } from './utils/storage';
 import { stripExtension, fileToBase64 } from './utils/file';
-import { findNodeById, updateNodeById } from './utils/taskTree';
+import { findNodeById, findPathToNode, updateNodeById } from './utils/taskTree';
+import {
+  RECOVERY_HISTORY_KEY,
+  appendRecoveryHistory,
+  applyRecoveryProposal,
+  buildRecoveryContext,
+  createRecoveryRecord,
+  loadRecoveryHistory,
+  validateRecoveryProposal,
+} from './utils/replan';
 import { postBreakdownRequest } from './services/breakdownApi';
+import { postReplanRequest } from './services/replanApi';
 import { fetchStats, recordFocusSession, recordCompletedTask } from './services/statsApi';
 import './styles/runtimeAnimations';
 
@@ -21,6 +31,7 @@ import ViewCE from './components/views/ViewCE';
 import NavItem from './components/common/NavItem';
 import ProgressRing from './components/common/ProgressRing';
 import RewardProgressModal from './components/common/RewardProgressModal';
+import RecoveryPlanModal from './components/common/RecoveryPlanModal';
 import LeftPanels from './components/panels/LeftPanels';
 import QuickNotesPanel from './components/panels/QuickNotesPanel';
 
@@ -62,6 +73,9 @@ export default function FocusTrailApp() {
   const [composerText, setComposerText] = useState('');
   const [composerFile, setComposerFile] = useState(null);
   const [isAiWorking, setIsAiWorking] = useState(false);
+  const [isRecoveryOpen, setIsRecoveryOpen] = useState(false);
+  const [recoveryActiveTaskId, setRecoveryActiveTaskId] = useState(null);
+  const [recoveryHistory, setRecoveryHistory] = useState(loadRecoveryHistory);
 
   // Sync settings theme to state
   useEffect(() => { setTheme(settings.theme); }, [settings.theme]);
@@ -97,6 +111,10 @@ export default function FocusTrailApp() {
   useEffect(() => {
     localStorage.setItem('fc_task_history', JSON.stringify(historyRecords));
   }, [historyRecords]);
+
+  useEffect(() => {
+    localStorage.setItem(RECOVERY_HISTORY_KEY, JSON.stringify(recoveryHistory));
+  }, [recoveryHistory]);
 
   useEffect(() => {
     const records = tasks
@@ -617,6 +635,55 @@ export default function FocusTrailApp() {
     setIsFocusedMode(false);
   };
 
+  const openRecovery = (taskId) => {
+    setRecoveryActiveTaskId(taskId || activeRootTask?.id);
+    setIsRecoveryOpen(true);
+  };
+
+  const generateRecovery = async (input) => {
+    if (!activeRootTask) throw new Error('请先选择一个需要恢复的计划。');
+    return postReplanRequest(buildRecoveryContext(activeRootTask, input));
+  };
+
+  const applyRecovery = (proposal, input) => {
+    if (!activeRootTask) return;
+    const validation = validateRecoveryProposal(activeRootTask, proposal, Number(activeRootTask.planVersion) || 1);
+    if (!validation.valid) {
+      showToast(`恢复方案已失效：${validation.errors[0]}`, 'warning');
+      return;
+    }
+    try {
+      const updatedRoot = applyRecoveryProposal(activeRootTask, proposal);
+      const record = createRecoveryRecord(activeRootTask, proposal, input);
+      setTasks((current) => current.map((task) => task.id === activeRootTask.id ? updatedRoot : task));
+      setRecoveryHistory((current) => appendRecoveryHistory(current, record));
+      setActiveTaskId(activeRootTask.id);
+      const nextPath = proposal.nextStepId === updatedRoot.id
+        ? []
+        : findPathToNode(updatedRoot.children || [], proposal.nextStepId) || [];
+      setPath([updatedRoot.id, ...nextPath]);
+      setIsFocusedMode(true);
+      setIsRecoveryOpen(false);
+      showToast('计划已修复，已带你回到新的下一步。');
+    } catch (error) {
+      showToast(error.message || '无法应用恢复方案。', 'warning');
+    }
+  };
+
+  const undoLatestRecovery = () => {
+    if (!activeRootTask) return;
+    const record = recoveryHistory.find((item) => item.rootTaskId === activeRootTask.id);
+    if (!record?.beforeSnapshot) {
+      showToast('当前计划没有可撤销的恢复记录。', 'warning');
+      return;
+    }
+    setTasks((current) => current.map((task) => task.id === activeRootTask.id ? record.beforeSnapshot : task));
+    setRecoveryHistory((current) => current.filter((item) => item.id !== record.id));
+    setPath([activeRootTask.id]);
+    setIsRecoveryOpen(false);
+    showToast('已撤销上次计划恢复。');
+  };
+
 
   return (
     <div className={`flex h-screen w-full font-sans overflow-hidden selection:bg-indigo-500/30 transition-colors duration-300 ${t.bgApp} ${t.textMain}`}>
@@ -806,6 +873,7 @@ export default function FocusTrailApp() {
               onSwitchTask={(id) => { setActiveTaskId(id); setPath([]); }}
               isWorking={isAiWorking}
               onOpenMonitor={() => setActivePanel('monitor')}
+              onOpenRecovery={() => openRecovery(activeRootTask.id)}
             />
           )}
 
@@ -821,6 +889,7 @@ export default function FocusTrailApp() {
               showToast={showToast}
               onTaskComplete={handleTaskComplete}
               onFocusSessionComplete={handleFocusSessionComplete}
+              onOpenRecovery={openRecovery}
             />
           )}
         </div>
@@ -908,6 +977,18 @@ export default function FocusTrailApp() {
       )}
 
       <RewardProgressModal open={isRewardsOpen} onClose={closeRewards} t={t} theme={theme} stats={stats} />
+      <RecoveryPlanModal
+        key={`${activeRootTask?.id || 'none'}-${isRecoveryOpen ? 'open' : 'closed'}`}
+        open={isRecoveryOpen}
+        rootTask={activeRootTask}
+        activeTaskId={recoveryActiveTaskId || activeRootTask?.id}
+        t={t}
+        onClose={() => setIsRecoveryOpen(false)}
+        onGenerate={generateRecovery}
+        onApply={applyRecovery}
+        onUndo={undoLatestRecovery}
+        canUndo={Boolean(activeRootTask && recoveryHistory.some((item) => item.rootTaskId === activeRootTask.id))}
+      />
 
       {/* Global Toast */}
       {toast && (

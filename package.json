@@ -10,6 +10,7 @@
     "preview": "vite preview",
     "server": "node server/index.js",
     "monitor-agent": "node scripts/desktop-monitor.js",
+    "test:replan": "node --test tests/replan.test.js",
     "download:gemma": "python3 scripts/download-gemma.py",
     "test:image-pipeline": "node scripts/run-gemma-python.js tests/check_multimodal_image_pipeline.py"
   },

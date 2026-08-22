@@ -10,7 +10,7 @@ import {
 } from 'lucide-react';
 
 
-export default function FocusDetailView({ t, theme, task, onComplete, onBack, onFurtherBreakdown, onRegenerate, onFocusSessionComplete }) {
+export default function FocusDetailView({ t, theme, task, onComplete, onBack, onFurtherBreakdown, onRegenerate, onFocusSessionComplete, onOpenRecovery }) {
   const initialMinutes = task?.estimatedMinutes || 25;
   const [selectedMinutes, setSelectedMinutes] = useState(initialMinutes);
   const [customMinutes, setCustomMinutes] = useState(String(initialMinutes));
@@ -173,12 +173,15 @@ export default function FocusDetailView({ t, theme, task, onComplete, onBack, on
             </button>
           </div>
 
-          <div className={`grid grid-cols-1 sm:grid-cols-3 items-center justify-center gap-4 mt-8 pt-8 border-t w-full ${t.border}`}>
+          <div className={`grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 items-center justify-center gap-4 mt-8 pt-8 border-t w-full ${t.border}`}>
             <button onClick={onFurtherBreakdown} className={`px-6 py-3 rounded-xl font-bold transition-colors w-full ${t.secondaryBtn}`}>
               Too hard? Breakdown further
             </button>
             <button onClick={onRegenerate} className="px-6 py-3 rounded-xl bg-amber-50 border border-amber-200 text-amber-700 font-bold hover:bg-amber-100 transition-colors flex items-center justify-center gap-2 w-full">
               <RefreshCw className="w-5 h-5" /> Regenerate
+            </button>
+            <button onClick={() => { setIsActive(false); onOpenRecovery?.(); }} className="px-6 py-3 rounded-xl bg-violet-500/10 border border-violet-500/20 text-violet-500 font-bold hover:bg-violet-500/20 transition-colors flex items-center justify-center gap-2 w-full">
+              <Clock className="w-5 h-5" /> 计划被打乱了
             </button>
             <button onClick={handleComplete} className="px-6 py-3 rounded-xl bg-emerald-500/10 border border-emerald-500/20 text-emerald-500 font-bold hover:bg-emerald-500/20 transition-colors flex items-center justify-center gap-2 w-full">
               <CheckCircle className="w-5 h-5" /> Mark Completed
@@ -193,4 +196,3 @@ export default function FocusDetailView({ t, theme, task, onComplete, onBack, on
 // ==========================================
 // UI & UTILITY COMPONENTS
 // ==========================================
-

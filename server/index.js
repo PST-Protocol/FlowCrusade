@@ -20,6 +20,12 @@ import { recoverCrashedSessions } from "./monitor/store.js";
 import { startHeartbeat } from "./monitor/stream.js";
 import { maybeStartMonitorAgent } from "./monitor/agent.js";
 import { inferText, isOllamaAvailable, hasGoogleApiKey, getProviderInfo } from "./gemmaProvider.js";
+import {
+  buildDeterministicReplan,
+  buildReplanPrompt,
+  normalizeModelProposal,
+  normalizeReplanRequest,
+} from "./replan.js";
 
 dotenv.config({ override: true });
 
@@ -2047,6 +2053,53 @@ app.post("/api/stats/distraction", (req, res) => {
 
 app.get("/api/provider/health", (req, res) => {
   res.json(getProviderHealth());
+});
+
+app.post("/api/replan", async (req, res) => {
+  const requestId = crypto.randomUUID();
+  let request;
+  try {
+    request = normalizeReplanRequest(req.body ?? {});
+  } catch (error) {
+    writeLog("error", "replan.request.invalid", { requestId, message: error.message });
+    return res.status(400).json({ error: error.message, requestId });
+  }
+
+  writeLog("info", "replan.request.received", {
+    requestId,
+    summary: "Received an adaptive recovery request.",
+    rootTaskId: request.rootTask.id,
+    activeTaskId: request.activeTaskId,
+    planVersion: request.planVersion,
+    delayMinutes: request.delayMinutes,
+    availableMinutes: request.availableMinutes,
+    reason: request.reason,
+  });
+
+  try {
+    const data = await callGemma([{ text: buildReplanPrompt(request) }], { requestId, operation: "adaptive-replan" });
+    const content = data.candidates?.[0]?.content?.parts?.[0]?.text ?? "";
+    const proposal = normalizeModelProposal(safeJsonParse(content), request);
+    proposal.provider = data.meta?.provider || "gemma";
+    writeLog("info", "replan.request.succeeded", {
+      requestId,
+      summary: "Generated and validated an adaptive recovery proposal.",
+      provider: proposal.provider,
+      changeCount: proposal.changes.length,
+      feasible: proposal.feasible,
+    });
+    return res.json({ ...proposal, requestId });
+  } catch (error) {
+    const proposal = buildDeterministicReplan(request);
+    writeLog("info", "replan.fallback.used", {
+      requestId,
+      summary: "Adaptive recovery used the deterministic fallback.",
+      error: error.message,
+      changeCount: proposal.changes.length,
+      feasible: proposal.feasible,
+    });
+    return res.json({ ...proposal, requestId });
+  }
 });
 
 app.post("/api/breakdown", async (req, res) => {

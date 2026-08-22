@@ -12,7 +12,7 @@ import {
 import CollapsibleText from '../common/CollapsibleText';
 import FocusDetailView from './FocusDetailView';
 
-export default function ViewCE({ t, theme, rootTask, path, onBreakdown, onRegenerate, onOpenNode, showToast, onTaskComplete, onFocusSessionComplete }) {
+export default function ViewCE({ t, theme, rootTask, path, onBreakdown, onRegenerate, onOpenNode, showToast, onTaskComplete, onFocusSessionComplete, onOpenRecovery }) {
   const [focusingSubtask, setFocusingSubtask] = useState(null);
 
   let currentContext = rootTask;
@@ -45,6 +45,7 @@ export default function ViewCE({ t, theme, rootTask, path, onBreakdown, onRegene
         }}
         onFurtherBreakdown={() => { setFocusingSubtask(null); onBreakdown(activeSubtask.id); }}
         onRegenerate={() => { setFocusingSubtask(null); onRegenerate(activeSubtask.id); }}
+        onOpenRecovery={() => onOpenRecovery?.(activeSubtask.id)}
       />
     );
   }
@@ -56,9 +57,14 @@ export default function ViewCE({ t, theme, rootTask, path, onBreakdown, onRegene
           <h2 className={`text-2xl font-bold mb-2 ${t.textMain}`}>{currentContext.title}</h2>
           <p className={`text-sm ${t.textMuted}`}>Select a step to focus on, regenerate just one step, or break one step into 3 smaller steps.</p>
         </div>
-        <button onClick={() => onRegenerate(currentContext.id)} className={`px-4 py-2 rounded-xl text-sm font-semibold flex items-center gap-2 transition-colors ${t.secondaryBtn}`}>
-          <RefreshCw className="w-4 h-4" /> Regenerate
-        </button>
+        <div className="flex items-center gap-2">
+          <button onClick={() => onOpenRecovery?.(currentContext.id)} className="px-4 py-2 rounded-xl text-sm font-semibold flex items-center gap-2 border border-amber-400/30 bg-amber-500/10 text-amber-600 hover:bg-amber-500/20 transition-colors">
+            <Clock className="w-4 h-4" /> 计划被打乱了
+          </button>
+          <button onClick={() => onRegenerate(currentContext.id)} className={`px-4 py-2 rounded-xl text-sm font-semibold flex items-center gap-2 transition-colors ${t.secondaryBtn}`}>
+            <RefreshCw className="w-4 h-4" /> Regenerate
+          </button>
+        </div>
       </div>
 
       <div className="space-y-4">
