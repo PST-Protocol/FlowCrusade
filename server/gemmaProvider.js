@@ -115,7 +115,7 @@ export async function classifyActivityWithGemma(event, activeTaskSummary) {
 /**
  * Run a text-only prompt through Gemma. Returns { text, meta } or null.
  */
-export async function inferText(prompt, { maxTokens = 512, requestId = '', operation = '', logger = null } = {}) {
+export async function inferText(prompt, { maxTokens = 512, requestId = '', operation = '', logger = null, signal } = {}) {
   const routeStartedAt = Date.now();
   const baseLog = {
     requestId,
@@ -134,7 +134,7 @@ export async function inferText(prompt, { maxTokens = 512, requestId = '', opera
   const ollamaReady = await isOllamaAvailable();
   if (ollamaReady) {
     try {
-      const result = await inferViaOllama(prompt, maxTokens, requestId, operation, logger);
+      const result = await inferViaOllama(prompt, maxTokens, requestId, operation, logger, signal);
       if (result?.text?.trim()) {
         writeProviderLog(logger, 'info', 'gemma.provider.route.success', {
           ...baseLog,
@@ -155,6 +155,7 @@ export async function inferText(prompt, { maxTokens = 512, requestId = '', opera
       });
       console.warn('[gemma.ollama.infer.empty]', requestId, 'Ollama returned empty text, trying Google API');
     } catch (err) {
+      if (err.name === 'AbortError') throw err;
       writeProviderLog(logger, 'error', 'gemma.provider.ollama.failed', {
         ...baseLog,
         message: 'Ollama text inference failed; trying Google AI Studio if configured.',
@@ -176,7 +177,7 @@ export async function inferText(prompt, { maxTokens = 512, requestId = '', opera
 
   if (hasGoogleApiKey()) {
     try {
-      const result = await inferViaGoogleAPI(prompt, maxTokens, requestId, operation, logger);
+      const result = await inferViaGoogleAPI(prompt, maxTokens, requestId, operation, logger, signal);
       writeProviderLog(logger, 'info', 'gemma.provider.route.success', {
         ...baseLog,
         summary: `${operation || 'text-inference'} completed via Google AI Studio.`,
@@ -187,6 +188,7 @@ export async function inferText(prompt, { maxTokens = 512, requestId = '', opera
       });
       return result;
     } catch (err) {
+      if (err.name === 'AbortError') throw err;
       writeProviderLog(logger, 'error', 'gemma.provider.google.failed', {
         ...baseLog,
         message: 'Google AI Studio text inference failed.',
@@ -309,7 +311,7 @@ async function classifyViaOllama(prompt, event, taskSummary) {
   return parseClassifyJson(genText, 'gemma-ollama', model);
 }
 
-async function inferViaOllama(prompt, maxTokens, requestId, operation, logger = null) {
+async function inferViaOllama(prompt, maxTokens, requestId, operation, logger = null, signal) {
   const ollamaBase = process.env.GEMMA_OLLAMA_URL || 'http://localhost:11434';
   const model = await getOllamaModelName();
   const startedAt = Date.now();
@@ -335,7 +337,7 @@ async function inferViaOllama(prompt, maxTokens, requestId, operation, logger = 
     options: { temperature: 0, num_predict: maxTokens },
   });
 
-  const raw = await httpPost(`${ollamaBase}/api/generate`, body, 120_000);
+  const raw = await httpPost(`${ollamaBase}/api/generate`, body, 120_000, signal);
   const parsed = JSON.parse(raw);
   const text = parsed?.response || '';
 
@@ -439,7 +441,7 @@ async function classifyViaGoogleAPI(prompt, event, taskSummary) {
   return parseClassifyJson(textPart, 'google-ai-studio', model);
 }
 
-async function inferViaGoogleAPI(prompt, maxTokens, requestId, operation, logger = null) {
+async function inferViaGoogleAPI(prompt, maxTokens, requestId, operation, logger = null, signal) {
   cloudCallCount += 1;
   const apiKey = process.env.GOOGLE_API_KEY;
   const model = getGoogleModelName();
@@ -463,7 +465,7 @@ async function inferViaGoogleAPI(prompt, maxTokens, requestId, operation, logger
     generation_config: { temperature: 0, max_output_tokens: maxTokens },
   });
 
-  const raw = await httpPost(url, body, 60_000);
+  const raw = await httpPost(url, body, 60_000, signal);
   const data = JSON.parse(raw);
   const text = data?.candidates?.[0]?.content?.parts?.[0]?.text || '';
 
@@ -619,7 +621,7 @@ function httpGetJson(url, timeoutMs) {
   });
 }
 
-function httpPost(url, body, timeoutMs) {
+function httpPost(url, body, timeoutMs, signal) {
   return new Promise((resolve, reject) => {
     const parsed = new URL(url);
     const lib = parsed.protocol === 'https:' ? https : http;
@@ -631,19 +633,41 @@ function httpPost(url, body, timeoutMs) {
       headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) },
       timeout: timeoutMs,
     };
+    let settled = false;
+    const finish = (callback, value) => {
+      if (settled) return;
+      settled = true;
+      signal?.removeEventListener('abort', abortRequest);
+      callback(value);
+    };
+    const abortRequest = () => {
+      const error = new Error('Request aborted');
+      error.name = 'AbortError';
+      req.destroy(error);
+      finish(reject, error);
+    };
     const req = lib.request(options, (res) => {
       let data = '';
       res.on('data', (c) => { data += c; });
       res.on('end', () => {
         if (res.statusCode >= 400) {
-          reject(new Error(`HTTP ${res.statusCode}: ${data.slice(0, 300)}`));
+          finish(reject, new Error(`HTTP ${res.statusCode}: ${data.slice(0, 300)}`));
         } else {
-          resolve(data);
+          finish(resolve, data);
         }
       });
     });
-    req.on('timeout', () => { req.destroy(); reject(new Error(`timeout after ${timeoutMs}ms`)); });
-    req.on('error', reject);
+    req.on('timeout', () => {
+      const error = new Error(`timeout after ${timeoutMs}ms`);
+      req.destroy(error);
+      finish(reject, error);
+    });
+    req.on('error', (error) => finish(reject, error));
+    if (signal?.aborted) {
+      abortRequest();
+      return;
+    }
+    signal?.addEventListener('abort', abortRequest, { once: true });
     req.write(body);
     req.end();
   });

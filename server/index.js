@@ -1385,7 +1385,7 @@ function getGemmaWorker(config) {
   return gemmaWorker;
 }
 
-async function callGemmaViaProvider(parts, { requestId, operation, maxNewTokens }) {
+async function callGemmaViaProvider(parts, { requestId, operation, maxNewTokens, signal }) {
   // Build a plain text prompt from the parts array
   const promptText = parts.map((p) => {
     if (typeof p?.text === "string") return p.text;
@@ -1393,7 +1393,7 @@ async function callGemmaViaProvider(parts, { requestId, operation, maxNewTokens 
     return "";
   }).filter(Boolean).join("\n\n");
 
-  const result = await inferText(promptText, { maxTokens: maxNewTokens, requestId, operation, logger: writeLog });
+  const result = await inferText(promptText, { maxTokens: maxNewTokens, requestId, operation, logger: writeLog, signal });
   if (!result) return null;
 
   return {
@@ -1402,7 +1402,7 @@ async function callGemmaViaProvider(parts, { requestId, operation, maxNewTokens 
   };
 }
 
-async function callGemma(parts, { requestId, operation }) {
+async function callGemma(parts, { requestId, operation, signal }) {
   const config = getGemmaConfig();
   const maxNewTokens = getMaxNewTokensForOperation(config, operation);
 
@@ -1410,7 +1410,7 @@ async function callGemma(parts, { requestId, operation }) {
   const hasNativeImage = requestHasNativeImageInput(parts);
   if (!hasNativeImage) {
     try {
-      const providerResult = await callGemmaViaProvider(parts, { requestId, operation, maxNewTokens });
+      const providerResult = await callGemmaViaProvider(parts, { requestId, operation, maxNewTokens, signal });
       if (providerResult) {
         writeLog("info", "gemma.provider.success", {
           requestId,
@@ -1426,6 +1426,7 @@ async function callGemma(parts, { requestId, operation }) {
         return providerResult;
       }
     } catch (providerErr) {
+      if (providerErr.name === "AbortError") throw providerErr;
       writeLog("info", "gemma.provider.failed", {
         requestId,
         message: `gemmaProvider failed for ${operation}: ${providerErr.message}. Trying HuggingFace runner.`,
@@ -1461,6 +1462,12 @@ async function callGemma(parts, { requestId, operation }) {
       modelDir: config.modelDir,
     });
     throw new Error(`Local Gemma model is unavailable at ${config.modelDir}`);
+  }
+
+  if (signal?.aborted) {
+    const error = new Error("Request aborted");
+    error.name = "AbortError";
+    throw error;
   }
 
   const requestDir = await fsp.mkdtemp(path.join(TEMP_ROOT_DIR, `${requestId}-${operation}-`));
@@ -1651,7 +1658,7 @@ async function callGemma(parts, { requestId, operation }) {
   }
 }
 
-async function generateInitialBreakdown({ taskInput, file, requestId }) {
+async function generateInitialBreakdown({ taskInput, file, requestId, signal }) {
   const config = getGemmaConfig();
   const instruction = `
 You are a task decomposition engine for a productivity MVP.
@@ -1706,7 +1713,7 @@ ${getFileSummaryText(file)}
   if (filePart) parts.push(filePart);
 
   try {
-    const data = await callGemma(parts, { requestId, operation: "initial-breakdown" });
+    const data = await callGemma(parts, { requestId, operation: "initial-breakdown", signal });
     const providerMeta = data.meta || {};
     const content = data.candidates?.[0]?.content?.parts?.[0]?.text ?? "";
     const parsed = safeJsonParse(content);
@@ -1741,6 +1748,7 @@ ${getFileSummaryText(file)}
       source: providerMeta.provider || "gemma",
     };
   } catch (error) {
+    if (error.name === "AbortError") throw error;
     writeLog("info", "gemma.fallback.initial", {
       requestId,
       message: "Initial breakdown fell back to deterministic local generation.",
@@ -2105,6 +2113,12 @@ app.post("/api/replan", async (req, res) => {
 app.post("/api/breakdown", async (req, res) => {
   const requestId = crypto.randomUUID();
   const { mode = "initial" } = req.body ?? {};
+  const requestController = new AbortController();
+  const abortRequest = () => {
+    if (!res.writableEnded) requestController.abort();
+  };
+  req.on("aborted", abortRequest);
+  res.on("close", abortRequest);
 
   try {
     await pruneOldContexts();
@@ -2161,6 +2175,7 @@ app.post("/api/breakdown", async (req, res) => {
         taskInput: trimmedTaskInput,
         file: processedFile,
         requestId,
+        signal: requestController.signal,
       });
 
       writeLog("info", "request.succeeded", {
@@ -2298,6 +2313,14 @@ app.post("/api/breakdown", async (req, res) => {
       publicMessage: "Unsupported breakdown mode.",
     });
   } catch (error) {
+    if (error.name === "AbortError" || requestController.signal.aborted) {
+      writeLog("info", "request.cancelled", {
+        requestId,
+        mode,
+        summary: `User cancelled ${mode} generation.`,
+      });
+      return;
+    }
     const statusCode = error instanceof AppError ? error.statusCode : 500;
     const publicMessage = error instanceof AppError ? error.publicMessage : "Internal server error";
     const details = error instanceof AppError ? error.details : error.message;

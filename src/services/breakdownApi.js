@@ -1,8 +1,9 @@
-export async function postBreakdownRequest(payload) {
+export async function postBreakdownRequest(payload, { signal } = {}) {
   const response = await fetch('http://localhost:8787/api/breakdown', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload),
+    signal,
   });
 
   let data = {};

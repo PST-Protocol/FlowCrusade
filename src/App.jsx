@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   Calendar as CalendarIcon, BarChart2, Activity, ChevronRight, Home,
   CheckCircle, Edit3, Zap, ShieldAlert, Menu, PanelLeftClose,
@@ -74,6 +74,7 @@ export default function FocusTrailApp() {
   const [composerFile, setComposerFile] = useState(null);
   const [isAiWorking, setIsAiWorking] = useState(false);
   const [submissionPreview, setSubmissionPreview] = useState(null);
+  const initialRequestControllerRef = useRef(null);
   const [isRecoveryOpen, setIsRecoveryOpen] = useState(false);
   const [recoveryActiveTaskId, setRecoveryActiveTaskId] = useState(null);
   const [recoveryHistory, setRecoveryHistory] = useState(loadRecoveryHistory);
@@ -415,6 +416,9 @@ export default function FocusTrailApp() {
       return;
     }
 
+    const requestController = new AbortController();
+    initialRequestControllerRef.current = requestController;
+
     try {
       setIsAiWorking(true);
       setToast(null);
@@ -437,7 +441,7 @@ export default function FocusTrailApp() {
           mode: 'initial',
           taskInput: trimmedInput,
           file: filePayload,
-        }),
+        }, { signal: requestController.signal }),
         new Promise((resolve) => setTimeout(resolve, 450)),
       ]);
 
@@ -469,12 +473,23 @@ export default function FocusTrailApp() {
       setSubmissionPreview(null);
       showToast('Task broken into 3 subtasks');
     } catch (error) {
+      if (error.name === 'AbortError') return;
       console.error(error);
       setSubmissionPreview(null);
       showToast(error.message || 'Local breakdown failed', 'warning');
     } finally {
+      if (initialRequestControllerRef.current === requestController) {
+        initialRequestControllerRef.current = null;
+      }
       setIsAiWorking(false);
     }
+  };
+
+  const handleCancelInitialSend = () => {
+    initialRequestControllerRef.current?.abort();
+    initialRequestControllerRef.current = null;
+    setIsAiWorking(false);
+    setSubmissionPreview(null);
   };
 
   const handleOpenNode = (targetId) => {
@@ -870,6 +885,7 @@ export default function FocusTrailApp() {
               onSubmit={handleInitialSend}
               isSubmitting={isAiWorking}
               submissionPreview={submissionPreview}
+              onCancelSubmission={handleCancelInitialSend}
             />
           )}
 
